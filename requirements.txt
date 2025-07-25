@@ -1,0 +1,10 @@
+flask
+pillow
+exifread
+geopy
+uuid
+sklearn
+sentence_transformers
+re
+os
+collections

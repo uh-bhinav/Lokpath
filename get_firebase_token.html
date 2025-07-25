@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Get Firebase ID Token</title>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+    <script>
+        // Your Firebase project configuration goes here
+        // FIND THIS IN: Firebase Console -> Project settings (gear icon) -> General -> "Your apps" section -> "Web app"
+        const firebaseConfig = {
+            apiKey: "AIzaSyBJg5lcZSMmNrPnHPp44lFJu9Mz5ccRm_I",
+            authDomain: "lokpath-2d9a0.firebaseapp.com",
+            projectId: "lokpath-2d9a0",
+            storageBucket: "lokpath-2d9a0.firebasestorage.app",
+            messagingSenderId: "751924399700",
+            appId: "1:751924399700:web:4c717bc61823f3ec76e7c1",
+  };
+
+        // Initialize Firebase
+        const app = firebase.initializeApp(firebaseConfig);
+        const auth = firebase.auth();
+
+        async function signInAndGetToken() {
+            const email = prompt("Enter email (e.g., testuser@example.com):");
+            const password = prompt("Enter password:");
+
+            try {
+                const userCredential = await auth.signInWithEmailAndPassword(email, password);
+                const idToken = await userCredential.user.getIdToken();
+                console.log("Firebase ID Token:", idToken);
+                alert("Token copied to console. Check browser's developer console (F12) -> Console tab.");
+            } catch (error) {
+                console.error("Error signing in:", error.message);
+                alert("Sign-in failed. Check console for details.");
+            }
+        }
+
+        // Call the function when the page loads
+        window.onload = signInAndGetToken;
+    </script>
+</head>
+<body>
+    <h1>Check Console for Firebase ID Token</h1>
+    <p>Enter your test user email and password when prompted.</p>
+</body>
+</html>
