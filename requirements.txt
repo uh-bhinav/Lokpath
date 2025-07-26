@@ -1,3 +1,14 @@
+flask
+pillow
+exifread
+geopy
+uuid
+sklearn
+sentence_transformers
+re
+os
+collections
+
 googlemaps
 firebase-admin
 numpy==1.26.4

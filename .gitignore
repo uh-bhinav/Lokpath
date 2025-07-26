@@ -1,3 +1,5 @@
+# Ignore Firebase/Google Cloud service account credentials
+credentials/
 # -----------------------
 # Python
 # -----------------------
