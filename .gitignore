@@ -1,0 +1,88 @@
+# -----------------------
+# Python
+# -----------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.egg-info/
+*.egg
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# -----------------------
+# macOS
+# -----------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# -----------------------
+# Logs & Cache
+# -----------------------
+*.log
+*.tmp
+*.swp
+*.swo
+
+# -----------------------
+# Virtual Environment
+# -----------------------
+/venv/
+/env/
+
+# -----------------------
+# Credentials & Secrets
+# -----------------------
+credentials/
+*.json
+*.pem
+*.key
+*.crt
+
+# -----------------------
+# Firebase
+# -----------------------
+.firebase/
+firestore-debug.log
+
+# -----------------------
+# OS/Editor Specific
+# -----------------------
+.vscode/
+.idea/
+*.iml
+
+# -----------------------
+# Jupyter & Notebooks
+# -----------------------
+.ipynb_checkpoints/
+*.ipynb
+
+# -----------------------
+# Bytecode / Compiled
+# -----------------------
+*.so
+*.dll
+*.exe
+*.out
+
+# -----------------------
+# Test & Coverage
+# -----------------------
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+
+# -----------------------
+# Misc
+# -----------------------
+*.bak
+*.orig
