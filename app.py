@@ -15,18 +15,39 @@ import firebase_admin
 from firebase_admin import credentials, firestore, auth
 from utils.tags_extractor import extract_tags
 from utils.moderation import is_description_safe 
+import logging 
 
 
 """cred = credentials.Certificate("/Users/abhinavgurkar/Lokpath_list_a_place/credentials/lokpath-2d9a0-firebase-adminsdk-fbsvc-11808bd26d.json")
 firebase_admin.initialize_app(cred)
 db = firestore.client()"""
 
+FIREBASE_SERVICE_ACCOUNT_CONTENT = os.environ.get('FIREBASE_SERVICE_ACCOUNT_CONTENT')
+FIREBASE_SERVICE_ACCOUNT_PATH = "credentials/lokpath-2d9a0-firebase-adminsdk-fbsvc-cd5812102d.json"
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-FIREBASE_SERVICE_ACCOUNT_PATH = "/Users/abhinavgurkar/Lokpath_list_a_place/credentials/lokpath-2d9a0-firebase-adminsdk-fbsvc-11808bd26d.json"
 def _initialize_firebase():
     if not firebase_admin._apps: # Check if Firebase app is not already initialized
-        cred = credentials.Certificate(FIREBASE_SERVICE_ACCOUNT_PATH)
-        firebase_admin.initialize_app(cred)
+        if FIREBASE_SERVICE_ACCOUNT_CONTENT:
+            import json
+            cred = credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_CONTENT))
+            firebase_admin.initialize_app(cred)
+            logging.info("Firebase initialized using environment variable.")
+        elif os.path.exists(FIREBASE_SERVICE_ACCOUNT_PATH):
+            cred = credentials.Certificate(FIREBASE_SERVICE_ACCOUNT_PATH)
+            firebase_admin.initialize_app(cred)
+            logging.info("Firebase initialized using local file path.")
+        else:
+            logging.error( # MODIFIED: Use standard logging
+                f"Firebase service account not found. Expected env var FIREBASE_SERVICE_ACCOUNT_CONTENT "
+                f"or file at {FIREBASE_SERVICE_ACCOUNT_PATH}. "
+                f"For Google Cloud deployments, ensure service account is linked and roles are granted."
+            )
+            raise FileNotFoundError(
+                f"Firebase service account not found. Expected env var FIREBASE_SERVICE_ACCOUNT_CONTENT "
+                f"or file at {FIREBASE_SERVICE_ACCOUNT_PATH}."
+            )
+
 
 _initialize_firebase() # Call the helper to initialize Firebase
 db = firestore.client(app=firebase_admin.get_app()) 

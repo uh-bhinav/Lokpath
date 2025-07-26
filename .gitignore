@@ -88,3 +88,4 @@ coverage.xml
 # -----------------------
 *.bak
 *.orig
+.env

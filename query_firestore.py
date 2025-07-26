@@ -1,14 +1,8 @@
 # query_firestore.py
 
 import firebase_admin
-from firebase_admin import credentials, firestore
-
-# ✅ Initialize Firestore once
-if not firebase_admin._apps:
-    cred = credentials.Certificate("credentials/lokpath-2d9a0-firebase-adminsdk-fbsvc-cd5812102d.json")
-    firebase_admin.initialize_app(cred)
-
-db = firestore.client()
+from firebase_admin import firestore
+db = firestore.client() 
 
 def get_filtered_pois(user_input):
     """
