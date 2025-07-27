@@ -1,0 +1,14 @@
+Flask==2.2.5
+Pillow==10.3.0
+ExifRead==3.0.0
+geopy==2.4.1
+scikit-learn==1.4.2
+sentence-transformers==2.7.0
+googlemaps==4.10.0
+firebase-admin==6.5.0
+numpy==1.26.4
+torch==2.2.0
+transformers==4.41.2
+tqdm==4.66.4
+requests
+python-dotenv
