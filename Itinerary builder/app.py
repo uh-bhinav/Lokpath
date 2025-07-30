@@ -418,6 +418,8 @@ def generate_itinerary_route():
             user_input["start_date"],
             user_input["end_date"],
             enable_hidden_gems=True,
+            location=user_input["location"],
+            user_interests=user_input.get("selected_interests", [])
         )
 
         trip_id = str(uuid.uuid4())

@@ -22,7 +22,7 @@ user_input = {
     "location": "bengaluru",
     "start_date": "2025-05-01",
     "end_date": "2025-05-07",
-    "selected_interests": ["sunset", "romantic", "peaceful", "trek"],
+    "selected_interests": ["sunset", "spiritual", "peaceful", "family-friendly"],
     "budget": "low",
     "with_kids": True,
     "with_pets": False,
@@ -69,7 +69,9 @@ itinerary = generate_itinerary(
     filtered_pois,
     user_input["start_date"],
     user_input["end_date"],
-    enable_hidden_gems=True
+    enable_hidden_gems=True,
+    location=user_input["location"],
+    user_interests=user_input["selected_interests"]
 )
 
 # ✅ Step 5: Generate unique trip ID

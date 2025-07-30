@@ -13,17 +13,17 @@ def load_google_api_key():
     with open(path, "r") as file:
         return file.read().strip()
 
-
 def map_price_level(level):
     """
     Maps Google's price_level (0–4) to human-friendly categories.
     Handles unknown values and ensures scaling safety.
+    Returns just the category string (not a dict).
     """
     if level is None or level == -1:
         return "unknown"
     try:
         level = int(level)
-    except ValueError:
+    except (ValueError, TypeError):
         return "unknown"
 
     if level <= 1:
@@ -32,3 +32,5 @@ def map_price_level(level):
         return "mid"
     elif level >= 3:
         return "high"
+    else:
+        return "unknown"
