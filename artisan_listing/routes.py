@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify, session, current_app
 from firebase_admin import firestore
 from user_auth.utils import login_required_user # Tourists list artisans
+from shared_globals import session_store, reverse_geocode, extract_simplified_region, extract_state_city_from_google 
 import datetime
 import re
 import uuid # Ensure uuid is imported
@@ -15,7 +16,6 @@ import uuid # Ensure uuid is imported
 # Alternative: if you move `session_store`, etc. to a `shared_utils.py`, import from there.
 
 from utils.moderation import is_description_safe
-from shared_globals import session_store, reverse_geocode, extract_simplified_region
 from utils.tags_extractor import extract_tags
 
 
@@ -137,9 +137,11 @@ def create_artisan_bp(db_instance): # Function to create and return the blueprin
             "location": {
                 "lat": coords.get("latitude"),
                 "lng": coords.get("longitude"),
-                "address": coords.get("region_name") # Full address from geocoding
+                "full_address": coords.get("full_address"), # New field for full address
+                "address_components": coords.get("address_components")
             },
-            "region_name": extract_simplified_region(coords.get("region_name", "Unknown")),
+            "region_name": coords.get("city"), # Use city as the region name
+            "state_name": coords.get("state"),
             "image_urls": preview_image_urls,
             "listed_by_uid": data.get("listed_by_uid"),
             "timestamp": data.get("timestamp"),
@@ -169,14 +171,19 @@ def create_artisan_bp(db_instance): # Function to create and return the blueprin
         coords = data.get("suggested_location") or data.get("manual_location") or {}
 
         location_data = {
-            "lat": coords.get("latitude"),
-            "lng": coords.get("longitude"),
-            "address": coords.get("region_name") # Full address from geocoding
+        "lat": coords.get("latitude"),
+        "lng": coords.get("longitude"),
+        "full_address": coords.get("full_address"),
+        "address_components": coords.get("address_components")
         }
+
+        state_name_for_firestore = coords.get("state")
+        city_name_for_firestore = coords.get("city")
+        if not state_name_for_firestore: state_name_for_firestore = "Unknown_State"
+        if not city_name_for_firestore: city_name_for_firestore = "Unknown_City"
 
         # image_filenames now correctly contains 'artisans/image.jpg' style paths
         image_paths_for_firestore = [f"/uploads/{f}" for f in data.get("image_filenames", [])]
-        region_name_for_firestore = extract_simplified_region(coords.get("region_name", "Unknown"))
 
         # Construct the final artisan document
         artisan_document = {
@@ -192,7 +199,8 @@ def create_artisan_bp(db_instance): # Function to create and return the blueprin
             "opening_hours": data.get('opening_hours'), # <--- NEW: Include opening_hours
             "tags": data.get("tags", []),
             "location": location_data,
-            "region_name": region_name_for_firestore,
+            "region_name": city_name_for_firestore,
+            "state_name": state_name_for_firestore,
             "image_urls": image_paths_for_firestore, # These now correctly point to uploads/artisans/
             "listed_by_uid": user_uid, # Confirmed as current user
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(), # Re-timestamp on final upload

@@ -1,47 +1,71 @@
+# shared_globals.py
 import os
+import googlemaps
 from collections import Counter
-from geopy.geocoders import Nominatim
-from geopy.distance import geodesic
-from werkzeug.utils import secure_filename # For allowed_file
+from geopy.distance import geodesic # Keep this for distance calculations
+from werkzeug.utils import secure_filename 
 
 # --- Global Variables ---
-session_store = {} # Temporary in-memory storage for multi-step forms
+session_store = {}
 
-# --- Helper Functions (moved from app.py) ---
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'} # Defined here as it's used by allowed_file
+# --- Geocoding API Client (read key from env) ---
+Maps_API_KEY = os.environ.get('Maps_API_KEY')
+gmaps_client = googlemaps.Client(key=Maps_API_KEY)
+
+# --- Helper Functions ---
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 def allowed_file(filename):
     """Checks if a file's extension is allowed."""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def reverse_geocode(lat, lon):
-    """Performs reverse geocoding to get a location address from lat/lon."""
-    geolocator = Nominatim(user_agent="lokpath_app", timeout=5)
+    """
+    Performs reverse geocoding using Google Maps API.
+    Returns a structured dictionary of address components.
+    """
     try:
-        location = geolocator.reverse((lat, lon), exactly_one=True)
-        if location:
-            return location.address
-    except Exception as e:
-        # current_app is not available here, so just print or log to file
-        print(f"Error during reverse geocoding for {lat},{lon}: {e}")
-    return "Unknown location"
+        # Google Maps Geocoding API is highly structured and reliable
+        geocode_result = gmaps_client.reverse_geocode((lat, lon))
+        if geocode_result:
+            address_components = {}
+            # Extract key components from the first result
+            for component in geocode_result[0]['address_components']:
+                # Use the short name if available, otherwise long name
+                component_type = component['types'][0]
+                address_components[component_type] = component['short_name'] if 'short_name' in component else component['long_name']
 
-def extract_simplified_region(location_address):
-    
-    if location_address:
-        # Split by comma, strip whitespace, remove " District"
-        address_parts = [part.strip().replace(' District', '') for part in location_address.split(',')]
-        
-        # Prioritize the first part if it's substantial (e.g., "Coorg", "Bengaluru")
-        if address_parts and len(address_parts[0]) > 1: # >1 to include short city names like "Delhi"
+            # Also return the full formatted address
+            address_components['full_address'] = geocode_result[0]['formatted_address']
+
+            return address_components
+
+    except Exception as e:
+        # We are not in a Flask app context here, so print to console
+        print(f"Error during Google Maps reverse geocoding for {lat},{lon}: {e}")
+
+    return None # Return None on failure
+
+def extract_simplified_region(full_address):
+    """Extracts a simplified region name from a full address string (for Nominatim fallback if needed)."""
+    # This function is now mainly a fallback or used for consistency, as Google provides structured data.
+    if full_address:
+        address_parts = [part.strip().replace(' District', '') for part in full_address.split(',')]
+        if address_parts and len(address_parts[0]) > 1:
             return address_parts[0].title()
-        
-        # Fallback to other parts if the first is generic or too short
-        # This list of terms can be expanded
         for part in address_parts:
             if part and part.lower() not in ["india", "state", "province", "city", "county", "republic"] and len(part) > 1:
                 return part.title()
-        
-        # Default fallback
         return "Unknown Region"
     return "Unknown Region"
+
+def extract_state_city_from_google(address_components):
+    """
+    Extracts state and city from a structured Google Maps API response.
+    This is far more reliable than parsing a string.
+    """
+    state = address_components.get('administrative_area_level_1', 'Unknown State')
+    city = address_components.get('locality') or \
+           address_components.get('administrative_area_level_2') or \
+           'Unknown City'
+    return state, city

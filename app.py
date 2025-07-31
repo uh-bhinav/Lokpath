@@ -1,10 +1,11 @@
 import os
 from dotenv import load_dotenv
 import shutil
+import json
 from user_auth.utils import login_required_user 
 load_dotenv()
 from flask import Flask, request, jsonify, session, current_app
-from shared_globals import session_store, allowed_file, reverse_geocode
+from shared_globals import session_store, allowed_file, reverse_geocode, extract_simplified_region, extract_state_city_from_google
 from werkzeug.utils import secure_filename
 from collections import Counter
 from utils.exif_utils import extract_gps
@@ -253,28 +254,53 @@ def upload_images():
     most_common_lat = Counter(latitudes).most_common(1)[0][0]
     most_common_lon = Counter(longitudes).most_common(1)[0][0]
 
-    region_name = reverse_geocode(most_common_lat, most_common_lon)
+    google_address_components = reverse_geocode(most_common_lat, most_common_lon)
+    if not google_address_components:
+        # Fallback to Nominatim if Google fails
+        nominatim_address = reverse_geocode_nominatim_fallback(most_common_lat, most_common_lon)
+        session_store[session_id].update({
+            "gps_fallback": False,
+            "suggested_location": {
+                "latitude": most_common_lat,
+                "longitude": most_common_lon,
+                "region_name": nominatim_address # Store the full address for display
+            },
+            "gps_found_in_images": len(gps_list),
+        })
+        return jsonify({
+            "message": "Images uploaded successfully (using Nominatim fallback)",
+            "session_id": session_id,
+            "suggested_location": { "latitude": most_common_lat, "longitude": most_common_lon, "region_name": nominatim_address },
+            "gps_found_in_images": len(gps_list)
+        }), 200
+
+    state, city = extract_state_city_from_google(google_address_components)
 
     session_store[session_id].update({
         "gps_fallback": False,
         "suggested_location": {
             "latitude": most_common_lat,
             "longitude": most_common_lon,
-            "region_name": region_name
+            "full_address": google_address_components['full_address'],
+            "state": state,
+            "city": city
         },
         "gps_found_in_images": len(gps_list),
     })
-    current_app.logger.info(f"Session {session_id}: Images uploaded to {upload_type}, GPS extracted. Suggested location: {region_name}")
+    current_app.logger.info(f"Session {session_id}: Images uploaded to {upload_type}, GPS extracted. Suggested location: {city}, {state}")
     return jsonify({
         "message": "Images uploaded successfully",
         "session_id": session_id,
         "suggested_location": {
             "latitude": most_common_lat,
             "longitude": most_common_lon,
-            "region_name": region_name
+            "full_address": google_address_components['full_address'],
+            "state": state,
+            "city": city
         },
         "gps_found_in_images": len(gps_list)
     }), 200
+
 
 @app.route('/finalize/<session_id>', methods=['GET'])
 def finalize_json(session_id):
@@ -299,7 +325,7 @@ def finalize_json(session_id):
             "lat": coords.get("latitude"),
             "lng": coords.get("longitude")
         },
-        "region_name": coords.get("region_name"),
+        "region_name": coords.get("full_address") or coords.get("region_name"),
         "session_id": session_id,
         "source": "image_extracted" if not data.get("gps_fallback") else "manual",
         "added_by": data["context"]["relationship"] if "context" in data else "visitor",
@@ -344,22 +370,33 @@ def upload_to_firebase(session_id):
         "status": "pending_review",
     }
 
+    coords = data.get("suggested_location") or data.get("manual_location") or {}
     if not data.get("gps_fallback"):
-        loc = data.get("suggested_location")
-        final_data["coordinates"] = {
-            "lat": loc["latitude"],
-            "lng": loc["longitude"]
-        }
-        region = loc["region_name"].split(",")[0].strip()
+        if coords and 'latitude' in coords and 'longitude' in coords:
+            final_data["coordinates"] = {"lat": coords["latitude"], "lng": coords["longitude"]}
+            # Use the new state and city from Google's response
+            state_name_for_firestore = coords.get("state")
+            city_name_for_firestore = coords.get("city")
+            final_data["region_name"] = coords.get("full_address") # Store full address
+            final_data["state_name"] = state_name_for_firestore
+            final_data["city_name"] = city_name_for_firestore
+        else:
+             current_app.logger.warning(f"Session {session_id}: gps_fallback is False but suggested_location is missing or incomplete.")
+             state_name_for_firestore, city_name_for_firestore = "Unknown_State", "Unknown_City"
+             final_data["region_name"] = "Unknown Location"
     else:
-        loc = data.get("manual_location")
-        final_data["coordinates"] = {
-            "lat": loc["latitude"],
-            "lng": loc["longitude"]
-        }
-        region = "Unknown"
+        if coords and 'latitude' in coords and 'longitude' in coords:
+            final_data["coordinates"] = {"lat": coords["latitude"], "lng": coords["longitude"]}
+            state_name_for_firestore, city_name_for_firestore = "Manual_Submissions_State", "Manual_Submissions_City"
+            final_data["region_name"] = "Manual Submissions"
+        else:
+            current_app.logger.warning(f"Session {session_id}: gps_fallback is True but manual_location is missing or incomplete.")
+            state_name_for_firestore, city_name_for_firestore = "Unknown_State", "Unknown_City"
+            final_data["region_name"] = "Unknown Location"
 
-    push_to_firestore(region, session_id, final_data)
+
+    
+    push_to_firestore(state_name_for_firestore, city_name_for_firestore, session_id, final_data)
 
     try:
         if user_uid:
@@ -377,10 +414,14 @@ def upload_to_firebase(session_id):
         current_app.logger.error(f"Error finalizing hidden gem submission {session_id}: {e}")
         return jsonify({"error": "Failed to finalize hidden gem submission.", "details": str(e)}), 500
 
-def push_to_firestore(region_name, session_id, data):
-    region_doc = db.collection('hidden_gems').document(region_name)
-    session_doc = region_doc.collection('gem_submissions').document(session_id)
-    session_doc.set(data)
+def push_to_firestore(state_name, city_name, session_id, data):
+    # New hierarchical path
+    state_doc_ref = db.collection('hidden_gems').document(state_name)
+    city_doc_ref = state_doc_ref.collection('cities').document(city_name)
+    gem_submission_doc_ref = city_doc_ref.collection('gem_submissions').document(session_id)
+
+    gem_submission_doc_ref.set(data)
+    current_app.logger.info(f"Hidden gem {session_id} added to Firestore under State: {state_name}, City: {city_name}.")
 
 
 if __name__ == '__main__':
