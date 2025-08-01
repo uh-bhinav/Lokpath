@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
 import os
+import dateutil.parser
 
 def _get_firestore_client():
     """Get Firestore client, initializing Firebase if needed."""
@@ -337,8 +338,8 @@ def generate_itinerary(filtered_pois, start_date, end_date, enable_hidden_gems=F
     Distributes POIs across available days and includes disclaimers + photos.
     ``max_per_day`` controls how many POIs can be assigned to a single day.
     """
-    start = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
+    start = dateutil.parser.isoparse(start_date)
+    end = dateutil.parser.isoparse(end_date)
     num_days = (end - start).days + 1
 
     # ✅ Fetch hidden gems first to know how many we have

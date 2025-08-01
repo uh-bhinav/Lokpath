@@ -1,14 +1,15 @@
 # utils/itinerary_utils.py
 
 from datetime import datetime
+import dateutil.parser
 
 def estimate_required_pois(start_date, end_date):
     """
     Estimate how many POIs are required to fill the itinerary.
     Currently assumes 2 POIs per day.
     """
-    start = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
+    start = dateutil.parser.isoparse(start_date)
+    end = dateutil.parser.isoparse(end_date)
     num_days = (end - start).days + 1
     return num_days * 2  # ✅ 2 POIs per day
 
@@ -31,7 +32,7 @@ def estimate_required_pois(start_date, end_date, pois_per_day=3):
     Estimate how many POIs are needed based on trip duration.
     Default: 3 POIs per day (adjustable for scaling).
     """
-    start = datetime.strptime(start_date, "%Y-%m-%d")
-    end = datetime.strptime(end_date, "%Y-%m-%d")
+    start = dateutil.parser.isoparse(start_date)
+    end = dateutil.parser.isoparse(end_date)
     days = (end - start).days + 1
     return days * pois_per_day

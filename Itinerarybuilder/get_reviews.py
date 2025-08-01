@@ -3,7 +3,7 @@
 import requests
 import json
 import os
-from utils.place_info import load_google_api_key
+from .utils.place_info import load_google_api_key
 
 GOOGLE_PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 

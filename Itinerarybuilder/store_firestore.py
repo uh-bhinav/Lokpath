@@ -2,7 +2,7 @@
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from utils.firebase_utils import get_service_account_path
+from .utils.firebase_utils import get_service_account_path
 import datetime
 from google.api_core.exceptions import GoogleAPIError
 
@@ -20,7 +20,8 @@ def store_itinerary(user_id, location, start_date, end_date, itinerary, trip_id)
     Includes timestamp, metadata, and nested day-wise POIs.
     """
     try:
-        doc_ref = db.collection("diary").document(user_id).collection("itineraries").document(trip_id)
+        
+        doc_ref = db.collection('users').document(user_id).collection('itineraries').document(trip_id)
 
         # ✅ Data structure for scalable storage
         data = {

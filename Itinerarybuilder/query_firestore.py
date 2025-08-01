@@ -2,7 +2,7 @@
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from utils.firebase_utils import get_service_account_path
+from .utils.firebase_utils import get_service_account_path
 
 # ✅ Initialize Firestore once
 if not firebase_admin._apps:

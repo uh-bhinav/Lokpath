@@ -56,6 +56,7 @@ db = firestore.client(app=firebase_admin.get_app())
 from user_auth.routes import create_user_bp
 from guide_booking.routes import create_guide_booking_bp 
 from artisan_listing.routes import create_artisan_bp
+from itinerary_generator.routes import create_itinerary_bp 
 
 # UPLOAD_FOLDER = 'uploads'
 # ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -77,6 +78,9 @@ app.register_blueprint(guide_booking_bp)
 
 artisan_bp = create_artisan_bp(db)
 app.register_blueprint(artisan_bp)
+
+itinerary_bp = create_itinerary_bp(db) 
+app.register_blueprint(itinerary_bp)
 
 """def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS

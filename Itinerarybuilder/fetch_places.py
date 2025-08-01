@@ -4,7 +4,7 @@ import requests
 import time
 import json
 import os
-from utils.place_info import load_google_api_key, map_price_level
+from .utils.place_info import load_google_api_key, map_price_level
 
 GOOGLE_PLACES_API_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 GEOCODE_API_URL = "https://maps.googleapis.com/maps/api/geocode/json"
