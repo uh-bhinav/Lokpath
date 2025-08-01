@@ -2,28 +2,29 @@
 
 from datetime import datetime
 
+def estimate_required_pois(start_date, end_date):
+    """
+    Estimate how many POIs are required to fill the itinerary.
+    Currently assumes 2 POIs per day.
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    num_days = (end - start).days + 1
+    return num_days * 2  # ✅ 2 POIs per day
 
 def infer_kid_friendly(tags):
-    """Return a guess whether a POI is kid friendly based on its tags.
-
-    The function returns ``True`` if the tags explicitly contain
-    ``"family-friendly"``.  If tags indicate potentially risky
-    activities (for example ``"trek"`` or ``"adventurous"``) the
-    function returns ``False``.  If no clear indication is found,
-    ``None`` is returned which signals that suitability for kids is
-    unknown.
     """
-
-    tag_set = set(t.lower() for t in tags or [])
-
-    if "family-friendly" in tag_set:
+    Infer if a place is kid-friendly based on its tags.
+    """
+    kid_friendly_tags = ["family-friendly", "safe", "peaceful", "nature", "cultural"]
+    not_kid_friendly_tags = ["crowded", "adventurous", "trek", "romantic"]
+    
+    if any(tag in kid_friendly_tags for tag in tags):
         return True
-
-    risky = {"trek", "adventurous", "nightlife"}
-    if tag_set.intersection(risky):
+    elif any(tag in not_kid_friendly_tags for tag in tags):
         return False
-
-    return None
+    else:
+        return None  # Unknown
 
 def estimate_required_pois(start_date, end_date, pois_per_day=3):
     """

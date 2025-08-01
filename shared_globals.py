@@ -1,4 +1,6 @@
 # shared_globals.py
+from dotenv import load_dotenv   # ✅ Add this
+load_dotenv() 
 import os
 import googlemaps
 from collections import Counter

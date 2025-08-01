@@ -54,9 +54,13 @@ def get_filtered_pois(user_input):
 
         # ✅ Accessibility disclaimers (do NOT reject, only mark warnings)
         disclaimer = []
-        if data["kid_friendly"] is False:
+        
+        # ✅ Check if family-friendly tag overrides kid_friendly field
+        is_family_friendly = "family-friendly" in [tag.lower() for tag in data.get("tags", [])]
+        
+        if data["kid_friendly"] is False and not is_family_friendly:
             disclaimer.append("⚠️ Caution: may not be kid friendly")
-        elif data["kid_friendly"] is True:
+        elif data["kid_friendly"] is True or is_family_friendly:
             disclaimer.append("✅ Suitable for kids")
         if user_input.get("with_pets") and data["pet_friendly"] is False:
             disclaimer.append("⚠️ No pets allowed")
