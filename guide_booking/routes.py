@@ -6,6 +6,7 @@ import datetime
 import uuid 
 
 
+
 def create_guide_booking_bp(db_instance):
     guide_booking_bp = Blueprint('guide_booking_bp', __name__, url_prefix='/guides')
 
@@ -68,127 +69,210 @@ def create_guide_booking_bp(db_instance):
             current_app.logger.error(f"Error listing guides for user {user_uid}: {e}", exc_info=True)
             return jsonify({"error": "Failed to retrieve guides."}), 500
 
-        # Future endpoints for booking requests, reviews, etc. will go here
+    # Future endpoints for booking requests, reviews, etc. will go here
+
+    def score_guide(guide_data, booking_criteria):
+        """Calculates a match score for a guide based on booking criteria."""
+        score = 0
+
+        # Factor 1: Average Rating (High priority)
+        # Weighting 1 to 5 stars is a good start.
+        score += guide_data.get('average_rating', 0) * 20 # 20 points per star
+
+        # Factor 2: Total Tours Completed (Experience)
+        # Add points for experience
+        score += guide_data.get('total_tours_completed', 0) / 10 # 1 point per 10 tours
+
+        # Factor 3: Matching more languages (Bonus)
+        requested_languages = set(booking_criteria.get('languages_needed', []))
+        guide_languages = set(guide_data.get('languages_spoken', []))
+        if requested_languages:
+            score += len(requested_languages.intersection(guide_languages)) * 5 # 5 points per matched language
+
+        # Factor 4: Matching more specialties (Bonus)
+        requested_specialties = set(booking_criteria.get('specialties_needed', []))
+        guide_specialties = set(guide_data.get('specialties', []))
+        if requested_specialties:
+            score += len(requested_specialties.intersection(guide_specialties)) * 5 # 5 points per matched specialty
+
+        # Add other scoring factors here in the future
+
+        return score
     
-    @guide_booking_bp.route('/request_booking', methods=['POST'])
-    @login_required_user # Only logged-in tourists can request bookings
-    def request_guide_booking():
-        user_uid = session.get('user_uid') # This is the tourist's UID
+    @guide_booking_bp.route('/request-assignment', methods=['POST'])
+    @login_required_user
+    def request_guide_assignment():
+        user_uid = session.get('user_uid')
         if not user_uid:
-            return jsonify({"error": "Authentication required to request a guide."}), 401
+            return jsonify({"error": "Authentication required."}), 401
 
         data = request.get_json()
-
-        # Input fields for guide request criteria
-        requested_location = data.get('location') # e.g., "Bengaluru"
-        requested_languages = data.get('languages_needed', []) # e.g., ["English", "Kannada"]
-        requested_specialties = data.get('specialties_needed', []) # e.g., ["History", "Food"]
-        requested_tier = data.get('tier_preferred') # e.g., "mid", "low", "high"
-
-        start_date_str = data.get('start_date')
-        end_date_str = data.get('end_date')
-        message_to_guide = data.get('message_to_guide', "")
-        itinerary_id = data.get('itinerary_id') # Optional: Link to a specific itinerary
-
-        # --- Input Validation ---
-        if not all([requested_location, requested_languages, start_date_str, end_date_str]):
-            return jsonify({"error": "Missing required fields: location, languages_needed, start_date, end_date."}), 400
-        if not isinstance(requested_languages, list) or not all(isinstance(x, str) for x in requested_languages):
-            return jsonify({"error": "languages_needed must be a list of strings."}), 400
-        if not isinstance(requested_specialties, list) or not all(isinstance(x, str) for x in requested_specialties):
-            return jsonify({"error": "specialties_needed must be a list of strings."}), 400
-        if requested_tier and requested_tier not in ['low', 'mid', 'high', 'any']:
-            return jsonify({"error": "tier_preferred must be 'low', 'mid', 'high', or 'any'."}), 400
+        
+        # Determine if the request is from an itinerary or a direct request
+        itinerary_id = data.get('itinerary_id')
+        requested_location = data.get('location')
+        
+        if not itinerary_id and not requested_location:
+            return jsonify({"error": "Missing required field: itinerary_id or location."}), 400
 
         try:
-            # Parse dates
-            start_date = datetime.datetime.fromisoformat(start_date_str.replace('Z', '+00:00')) # Handle 'Z' for UTC
-            end_date = datetime.datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))     # Handle 'Z' for UTC
-            if end_date < start_date:
-                return jsonify({"error": "End date cannot be before start date."}), 400
+            # --- Get the user's booking criteria ---
+            booking_criteria = {
+                "location": requested_location,
+                "languages_needed": data.get('languages_needed', []),
+                "specialties_needed": data.get('specialties_needed', []),
+                "tier_preferred": data.get('tier_preferred', 'any'),
+                "start_date": data.get('start_date'),
+                "end_date": data.get('end_date'),
+                "itinerary_id": itinerary_id,
+            }
 
-            # --- Find eligible guides for this request ---
-            # Step 1: Query Firestore with the maximum allowed filters (one array_contains/any)
-            # Prioritize 'regions_covered' as it's geographic.
+            if itinerary_id:
+                itinerary_ref = db_instance.collection('users').document(user_uid).collection('itineraries').document(itinerary_id)
+                itinerary_doc = itinerary_ref.get()
+                if itinerary_doc.exists:
+                    itinerary_data = itinerary_doc.to_dict()
+
+                    # Fetch start/end dates and location from the itinerary
+                    booking_criteria['start_date'] = itinerary_data.get('start_date')
+                    booking_criteria['end_date'] = itinerary_data.get('end_date')
+                    booking_criteria['location'] = itinerary_data.get('location')
+
+                    # Automatically infer specialties and languages from all POI tags in the itinerary
+                    all_poi_tags = set()
+                    for day_plan in itinerary_data.get('itinerary', {}).values():
+                        for poi in day_plan:
+                            all_poi_tags.update(poi.get('tags', []))
+
+                    # Use these tags as the specialties needed
+                    booking_criteria['specialties_needed'] = list(all_poi_tags)
+                    # For languages, we can assume English and Hindi for now or infer from location.
+                    # A good future improvement would be to store languages in itinerary itself.
+                    booking_criteria['languages_needed'] = ["English", "Hindi"] 
+
+                else:
+                    return jsonify({"error": "Itinerary not found for this user."}), 404
+
+            if not all([booking_criteria.get('location'), booking_criteria.get('start_date'), booking_criteria.get('end_date')]):
+                return jsonify({"error": "Booking criteria could not be inferred from the itinerary. Please provide location and dates."}), 400
+
+            # --- Find eligible guides for assignment ---
             eligible_guides_query = db_instance.collection('guides').where('status', '==', 'approved')
 
-            # Apply regions_covered filter in Firestore
-            eligible_guides_query = eligible_guides_query.where('regions_covered', 'array_contains', requested_location.title())
+            eligible_guides_query = eligible_guides_query.where('regions_covered', 'array_contains', booking_criteria['location'].title())
 
-            # Apply tier filter in Firestore (can be combined with array_contains)
-            if requested_tier and requested_tier != 'any':
-                eligible_guides_query = eligible_guides_query.where('tier', '==', requested_tier)
+            if booking_criteria['tier_preferred'] and booking_criteria['tier_preferred'] != 'any':
+                eligible_guides_query = eligible_guides_query.where('tier', '==', booking_criteria['tier_preferred'])
 
-            # Fetch candidates from Firestore
-            eligible_guide_candidates = []
-            for doc in eligible_guides_query.stream():
+            eligible_guide_candidates = [doc for doc in eligible_guides_query.stream()]
+            print(f"DEBUG: Initial Firestore query found {len(eligible_guide_candidates)} eligible guides.") # <--- NEW DEBUGGING LINE
+
+
+            final_eligible_guides = []
+            requested_specialties_set = set(s.title() for s in booking_criteria['specialties_needed'])
+            requested_languages_set = set(l.title() for l in booking_criteria['languages_needed'])
+
+            for doc in eligible_guide_candidates:
                 guide_data = doc.to_dict()
-                guide_data['id'] = doc.id # Add ID to dict for easier Python filtering
-                eligible_guide_candidates.append(guide_data)
-
-            # Step 2: Filter remaining array fields (languages, specialties) in Python
-            final_eligible_guides_data = []
-            requested_languages_set = set(l.title() for l in requested_languages) # Normalize and convert to set for efficiency
-            requested_specialties_set = set(s.title() for s in requested_specialties) # Normalize and convert to set
-
-            for guide_data in eligible_guide_candidates:
-                guide_languages = set(guide_data.get('languages_spoken', []))
                 guide_specialties = set(guide_data.get('specialties', []))
+                guide_languages = set(guide_data.get('languages_spoken', []))
 
-                # Check if guide speaks ALL requested languages (intersection)
+            # Filter in Python based on languages
                 if requested_languages_set and not guide_languages.issuperset(requested_languages_set):
-                    continue # Skip if guide doesn't speak all required languages
+                    print(f"DEBUG: Guide {doc.id} filtered out for languages.")
+                    continue
 
-                # Check if guide has ALL requested specialties (intersection)
+            # Filter in Python based on specialties
                 if requested_specialties_set and not guide_specialties.issuperset(requested_specialties_set):
-                    continue # Skip if guide doesn't have all required specialties
+                    print(f"DEBUG: Guide {doc.id} filtered out for specialties.")
+                    continue
 
-                final_eligible_guides_data.append(guide_data)
+                final_eligible_guides.append(doc)
+                
+            print(f"DEBUG: After Python filtering, found {len(final_eligible_guides)} guides.")
 
-            eligible_guide_uids = [guide['id'] for guide in final_eligible_guides_data] # Get UIDs from filtered data
-
+            # --- CRITICAL NEW LOGIC: Availability Check ---
+            # 1. Get the list of all eligible guide UIDs
+            eligible_guide_uids = [doc.id for doc in final_eligible_guides]
             if not eligible_guide_uids:
-                current_app.logger.info(f"No eligible guides found for request by {user_uid} for {requested_location} after in-Python filtering.")
-                return jsonify({"message": "No guides found matching your criteria. Please adjust your request."}), 404
+                return jsonify({"message": "No guides found matching your criteria. Please try again with different criteria."}), 404
 
-            # --- Store the Booking Request ---
+            # 2. Check the 'bookings' collection for conflicts with the requested dates
+            # This query finds guides who are already booked on the requested dates.
+            conflicting_bookings_query = db_instance.collection('bookings') \
+                .where('assigned_guide_uid', 'in', eligible_guide_uids) \
+                .where('status', 'in', ['pending_acceptance', 'accepted']) \
+                .where('end_date', '>=', booking_criteria['start_date']) \
+                .where('start_date', '<=', booking_criteria['end_date'])
+
+            booked_guide_uids = {doc.to_dict()['assigned_guide_uid'] for doc in conflicting_bookings_query.stream()}
+
+            # 3. Filter out the booked guides from the eligible list
+            truly_available_guides = [doc for doc in final_eligible_guides if doc.id not in booked_guide_uids]
+
+            if not truly_available_guides:
+                return jsonify({"message": "All eligible guides are currently booked for the requested dates. Please try another time."}), 404
+
+            # --- Core "Ola/Uber" Assignment Logic ---
+            if not final_eligible_guides:
+                return jsonify({"message": "No guides found matching your criteria. Please try again with different criteria."}), 404
+            
+            scored_guides = []
+            for doc in final_eligible_guides:
+                guide_data = doc.to_dict()
+                guide_id = doc.id
+                match_score = score_guide(guide_data, booking_criteria)
+                scored_guides.append({'id': guide_id, 'data': guide_data, 'score': match_score})
+
+            # 2. Find the highest-scoring guide
+            if not scored_guides:
+                return jsonify({"message": "No guides could be scored for assignment."}), 500 # Should not happen, but for safety
+
+            scored_guides.sort(key=lambda x: x['score'], reverse=True)
+            assigned_guide_info = scored_guides[0] # Pick the top scoring guide
+
+            assigned_guide_uid = assigned_guide_info['id']
+            assigned_guide_details = assigned_guide_info['data']
+            
             booking_id = str(uuid.uuid4())
             booking_data = {
-                "booking_id": booking_id, # Redundant but useful for client
+                "booking_id": booking_id,
                 "tourist_uid": user_uid,
-                "requested_location": requested_location,
-                "requested_languages": requested_languages,
-                "requested_specialties": requested_specialties,
-                "requested_tier": requested_tier,
+                "assigned_guide_uid": assigned_guide_uid,
+                "itinerary_id": itinerary_id,
+                "start_date": booking_criteria.get('start_date'),
+                "end_date": booking_criteria.get('end_date'),
                 "request_timestamp": firestore.SERVER_TIMESTAMP,
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "message_to_guide": message_to_guide,
-                "itinerary_id": itinerary_id, # Will be null if not provided
-                "status": "pending_acceptance", # Initial status
-                "assigned_guide_uid": None, # Will be filled when a guide accepts (by separate guide platform)
-                "potential_guide_uids": eligible_guide_uids, # List of guides who might see this request
-                "cancellation_history": { # To track cancellations for this specific booking
+                "status": "pending_acceptance",
+                "message_to_guide": data.get('message_to_guide', ""),
+                "cancellation_history": {
                     "tourist_cancelled": False,
                     "guide_cancelled": False,
                     "reason": None
                 }
             }
-
             db_instance.collection('bookings').document(booking_id).set(booking_data)
-            current_app.logger.info(f"Booking request {booking_id} created by user {user_uid}. Eligible guides: {len(eligible_guide_uids)}")
+
+            if itinerary_id:
+                itinerary_ref.update({"booking_id": booking_id, "guide_booked_uid": assigned_guide_uid, "status": "pending_acceptance"})
 
             return jsonify({
-                "message": "Guide booking request submitted successfully! Guides are being notified.",
+                "message": "A guide has been assigned to your request.",
                 "booking_id": booking_id,
-                "eligible_guides_count": len(eligible_guide_uids)
+                "assigned_guide": {
+                    "id": assigned_guide_uid,
+                    "name": assigned_guide_details.get('name'),
+                    "profile_image_url": assigned_guide_details.get('profile_image_url'),
+                    "bio": assigned_guide_details.get('bio'),
+                    "average_rating": assigned_guide_details.get('average_rating'),
+                    "tier": assigned_guide_details.get('tier'),
+                }
             }), 201
 
-        except ValueError:
-            return jsonify({"error": "Invalid date format. Use ISO 8601 (YYYY-MM-DDTHH:MM:SS.sssZ) for start_date/end_date."}), 400
         except Exception as e:
-            current_app.logger.error(f"Error submitting booking request for user {user_uid}: {e}", exc_info=True)
-            return jsonify({"error": "Failed to submit booking request.", "details": str(e)}), 500
+            current_app.logger.error(f"Error processing assignment request for user {user_uid}: {e}", exc_info=True)
+            return jsonify({"error": "Failed to assign a guide.", "details": str(e)}), 500
+
     
     @guide_booking_bp.route('/my-bookings', methods=['GET'])
     @login_required_user # Only logged-in tourists can view their bookings

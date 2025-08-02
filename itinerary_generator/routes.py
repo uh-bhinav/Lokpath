@@ -173,5 +173,142 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
         itineraries.sort(key=lambda x: x.get('generated_at', firestore.SERVER_TIMESTAMP), reverse=True)
 
         return jsonify({"message": "User itineraries retrieved successfully", "itineraries": itineraries}), 200
+    
+    @itinerary_bp.route('/<itinerary_id>/book-guide', methods=['POST'])
+    @login_required_user
+    def book_guide_for_itinerary(itinerary_id):
+        user_uid = session.get('user_uid')
+        if not user_uid:
+            return jsonify({"error": "Authentication required."}), 401
+
+        data = request.get_json()
+        guide_id = data.get('guide_id')
+
+        if not guide_id:
+            return jsonify({"error": "Missing required field: guide_id."}), 400
+
+        try:
+            # 1. Verify the itinerary exists and belongs to the user
+            itinerary_ref = db_instance.collection('users').document(user_uid).collection('itineraries').document(itinerary_id)
+            itinerary_doc = itinerary_ref.get()
+            if not itinerary_doc.exists:
+                return jsonify({"error": "Itinerary not found for this user."}), 404
+
+            itinerary_data = itinerary_doc.to_dict()
+
+            # 2. Verify the guide exists and is approved
+            guide_ref = db_instance.collection('guides').document(guide_id)
+            guide_doc = guide_ref.get()
+            if not guide_doc.exists or guide_doc.to_dict().get('status') != 'approved':
+                return jsonify({"error": "Requested guide not found or not approved."}), 404
+
+            # 3. Create a new booking document in Firestore
+            booking_id = str(uuid.uuid4())
+            booking_data = {
+                "booking_id": booking_id,
+                "tourist_uid": user_uid,
+                "assigned_guide_uid": guide_id,
+                "itinerary_id": itinerary_id, # Link the booking to the itinerary
+                "itinerary_location": itinerary_data.get('input_preferences', {}).get('location'),
+                "start_date": itinerary_data.get('input_preferences', {}).get('start_date'),
+                "end_date": itinerary_data.get('input_preferences', {}).get('end_date'),
+                "request_timestamp": firestore.SERVER_TIMESTAMP,
+                "status": "pending_acceptance", # Assuming a pending state for the guide to accept
+                "message_to_guide": data.get('message_to_guide', "")
+            }
+
+            db_instance.collection('bookings').document(booking_id).set(booking_data)
+
+            current_app.logger.info(f"Booking request {booking_id} created for itinerary {itinerary_id} by {user_uid}.")
+
+            # 4. Update the itinerary document to show it has a guide booked
+            itinerary_ref.update({
+                "guide_booked_uid": guide_id,
+                "booking_id": booking_id,
+                "status": "booked"
+            })
+            current_app.logger.info(f"Itinerary {itinerary_id} status updated to 'booked'.")
+
+            return jsonify({
+                "message": "Guide booking request submitted successfully!",
+                "booking_id": booking_id,
+                "itinerary_id": itinerary_id,
+                "assigned_guide_uid": guide_id
+            }), 201
+
+        except Exception as e:
+            current_app.logger.error(f"Error booking guide for itinerary {itinerary_id} for user {user_uid}: {e}", exc_info=True)
+            return jsonify({"error": "Failed to book guide for itinerary.", "details": str(e)}), 500
+        
+    @itinerary_bp.route('/<itinerary_id>/book-guide/segments', methods=['POST'])
+    @login_required_user
+    def book_guide_for_itinerary_segments(itinerary_id):
+        user_uid = session.get('user_uid')
+        if not user_uid:
+            return jsonify({"error": "Authentication required."}), 401
+
+        data = request.get_json()
+        guide_id = data.get('guide_id')
+        segments = data.get('segments') # A list of {'day': 1, 'poi_name': '...'}
+        message_to_guide = data.get('message_to_guide', "")
+
+        if not guide_id or not segments:
+            return jsonify({"error": "Missing required fields: guide_id and segments."}), 400
+
+        if not isinstance(segments, list) or not all('day' in s and 'poi_name' in s for s in segments):
+            return jsonify({"error": "Segments must be a list of objects with 'day' and 'poi_name'."}), 400
+
+        try:
+            # 1. Verify the itinerary exists and belongs to the user
+            itinerary_ref = db_instance.collection('users').document(user_uid).collection('itineraries').document(itinerary_id)
+            itinerary_doc = itinerary_ref.get()
+            if not itinerary_doc.exists:
+                return jsonify({"error": "Itinerary not found for this user."}), 404
+
+            itinerary_data = itinerary_doc.to_dict()
+
+            # 2. Verify the guide exists and is approved
+            guide_ref = db_instance.collection('guides').document(guide_id)
+            guide_doc = guide_ref.get()
+            if not guide_doc.exists or guide_doc.to_dict().get('status') != 'approved':
+                return jsonify({"error": "Requested guide not found or not approved."}), 404
+
+            # 3. Create a new booking document for the segments
+            booking_id = str(uuid.uuid4())
+            booking_data = {
+                "booking_id": booking_id,
+                "tourist_uid": user_uid,
+                "assigned_guide_uid": guide_id,
+                "itinerary_id": itinerary_id,
+                "itinerary_segments": segments, # Store the specific segments
+                "booking_type": "per_segment",
+                "request_timestamp": firestore.SERVER_TIMESTAMP,
+                "status": "pending_acceptance",
+                "message_to_guide": message_to_guide
+            }
+
+            db_instance.collection('bookings').document(booking_id).set(booking_data)
+
+            current_app.logger.info(f"Segment booking {booking_id} created for itinerary {itinerary_id} by {user_uid}.")
+
+            # 4. Update the itinerary document to show it has a guide booked for specific parts
+            itinerary_ref.update({
+                "guide_booked_uid": guide_id,
+                "booking_id": booking_id,
+                "status": "booked"
+            })
+            current_app.logger.info(f"Itinerary {itinerary_id} status updated to 'booked' for specific segments.")
+
+            return jsonify({
+                "message": "Guide booking request for itinerary segments submitted successfully!",
+                "booking_id": booking_id,
+                "itinerary_id": itinerary_id,
+                "assigned_guide_uid": guide_id
+            }), 201
+
+        except Exception as e:
+            current_app.logger.error(f"Error booking guide for itinerary segments {itinerary_id} for user {user_uid}: {e}", exc_info=True)
+            return jsonify({"error": "Failed to book guide for itinerary segments.", "details": str(e)}), 500
+
 
     return itinerary_bp
