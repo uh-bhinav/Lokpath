@@ -1,0 +1,22 @@
+# LokPath Diary Backend Dependencies
+
+# Core Flask
+Flask==2.3.3
+Werkzeug==2.3.7
+
+# Firebase
+firebase-admin==6.2.0
+google-cloud-firestore==2.13.1
+
+# Image Processing
+Pillow==10.0.1
+pillow-heif==0.13.0
+
+# EXIF Data Extraction
+ExifRead==3.0.0
+
+# Date/Time Processing
+python-dateutil==2.8.2
+
+# Environment Management
+python-dotenv==1.0.0
