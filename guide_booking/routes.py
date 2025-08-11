@@ -111,6 +111,7 @@ def create_guide_booking_bp(db_instance):
         # Determine if the request is from an itinerary or a direct request
         itinerary_id = data.get('itinerary_id')
         requested_location = data.get('location')
+        segments = data.get('segments', [])
         
         if not itinerary_id and not requested_location:
             return jsonify({"error": "Missing required field: itinerary_id or location."}), 400
@@ -142,7 +143,9 @@ def create_guide_booking_bp(db_instance):
                     all_poi_tags = set()
                     for day_plan in itinerary_data.get('itinerary', {}).values():
                         for poi in day_plan:
-                            all_poi_tags.update(poi.get('tags', []))
+                            if not segments or any(s.get('poi_name') == poi.get('name') or s.get('poi_id') == poi.get('poi_id') for s in segments):
+                                all_poi_tags.update(poi.get('tags', []))
+                            
 
                     # Use these tags as the specialties needed
                     booking_criteria['specialties_needed'] = list(all_poi_tags)

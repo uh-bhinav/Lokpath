@@ -411,9 +411,13 @@ def upload_to_firebase(session_id):
 
     try:
         if user_uid:
-            user_doc_ref = db.collection('users').document(user_uid)
-            # Atomically increment the submitted_gems_count
-            user_doc_ref.update({'submitted_gems_count': firestore.Increment(1)})
+            # Store a copy of the gem data in a subcollection under the user
+            user_gems_ref = db.collection('users').document(user_uid).collection('hidden_gems_listed').document(session_id)
+            user_gems_ref.set(final_data)
+
+            # Update the submitted_gems_count on the user's profile
+            user_profile_ref = db.collection('users').document(user_uid)
+            user_profile_ref.update({'submitted_gems_count': firestore.Increment(1)})
             current_app.logger.info(f"Incremented submitted_gems_count for user {user_uid}.")
 
         # Clean up session store after successful finalization

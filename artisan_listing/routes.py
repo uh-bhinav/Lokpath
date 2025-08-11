@@ -214,12 +214,16 @@ def create_artisan_bp(db_instance): # Function to create and return the blueprin
             artisan_listing_id = str(uuid.uuid4()) # A new UUID for the final artisan document
             db_instance.collection('artisans').document(artisan_listing_id).set(artisan_document)
             current_app.logger.info(f"Artisan listing {artisan_listing_id} uploaded to Firebase by {user_uid}.")
+            if user_uid:
+                user_artisans_ref = db_instance.collection('users').document(user_uid).collection('artisans_listed').document(artisan_listing_id)
+                user_artisans_ref.set(artisan_document)
 
-            # Increment count on user's profile for "artisans listed"
-            user_profile_ref = db_instance.collection('users').document(user_uid)
-            # Ensure 'artisans_listed_count' exists and is initialized to 0 in user profile.
-            user_profile_ref.update({'artisans_listed_count': firestore.Increment(1)}) 
-            current_app.logger.info(f"User {user_uid} artisans_listed_count incremented.")
+
+                # Increment count on user's profile for "artisans listed"
+                user_profile_ref = db_instance.collection('users').document(user_uid)
+                # Ensure 'artisans_listed_count' exists and is initialized to 0 in user profile.
+                user_profile_ref.update({'artisans_listed_count': firestore.Increment(1)}) 
+                current_app.logger.info(f"User {user_uid} artisans_listed_count incremented.")
 
             # Clean up session store
             del session_store[session_id]
