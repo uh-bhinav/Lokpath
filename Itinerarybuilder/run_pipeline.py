@@ -19,10 +19,10 @@ import uuid
 # 🧪 Simulated user input (replace with frontend values in production)
 user_input = {
     "user_id": "user_123",
-    "location": "Bengaluru",
+    "location": "Goa",
     "start_date": "2025-05-01",
     "end_date": "2025-05-07",
-    "selected_interests": ["family-friendly", "adventurous", "peaceful", "cultural"],
+    "selected_interests": ["Parties", "adventurous", "fun", "Pubs"],
     "budget": "low",
     "with_kids": True,
     "with_pets": False,

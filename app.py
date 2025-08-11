@@ -58,7 +58,9 @@ from guide_booking.routes import create_guide_booking_bp
 from artisan_listing.routes import create_artisan_bp
 from itinerary_generator.routes import create_itinerary_bp 
 from discovery_apis.routes import create_discovery_bp 
-
+from diary.routes.diary_routes import create_diary_bp
+from diary.routes.proximity_routes import create_proximity_bp
+from diary.routes.progress_routes import create_progress_bp
 
 # UPLOAD_FOLDER = 'uploads'
 # ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
@@ -70,7 +72,15 @@ os.makedirs('uploads', exist_ok=True)
 
 # Temporary in-memory storage
 
-# session_store = {}
+# Register blueprints
+diary_bp = create_diary_bp(db)
+app.register_blueprint(diary_bp)
+
+proximity_bp = create_proximity_bp(db)
+app.register_blueprint(proximity_bp)
+
+progress_bp = create_progress_bp(db)
+app.register_blueprint(progress_bp)
 
 user_bp = create_user_bp(db) 
 app.register_blueprint(user_bp)
