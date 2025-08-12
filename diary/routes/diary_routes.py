@@ -1,10 +1,12 @@
 from flask import Blueprint, request, jsonify
-# from diary.firebase.firebase_config import db
 from diary.services.diary_photo_uploader import upload_diary_photo
 from diary.services.firestore_photo_storage import (
-    get_photos_from_firestore, 
+    get_photos_from_firestore,
     delete_photo_from_firestore
 )
+from diary.services.itinerary_pipeline import optimize_then_save_itinerary
+from diary.services.proximity_optimizer import optimize_itinerary_by_proximity
+from diary.utils.firestore_paths import itinerary_doc, photos_col
 from collections import defaultdict
 from datetime import datetime
 import uuid
@@ -17,49 +19,52 @@ def create_diary_bp(db):
     
     @diary_bp.route("/user-itinerary/<user_id>/<trip_id>", methods=["PUT"])
     def update_user_itinerary(user_id, trip_id):
-        """Update itinerary metadata"""
+        """Save/update itinerary: ALWAYS optimize before finalizing."""
         try:
-            updated_data = request.json
-
-            if not updated_data:
+            payload = request.get_json()
+            if not payload:
                 return jsonify({"error": "No data provided"}), 400
+            if not isinstance(payload.get("itinerary"), dict) or not payload["itinerary"]:
+                return jsonify({"error": "Missing or invalid 'itinerary'"}), 400
 
-            doc_ref = db.collection("diary").document(user_id).collection("itineraries").document(trip_id)
+            # Run pipeline
+            optimized = optimize_then_save_itinerary(user_id, trip_id, payload)
 
-            # Check if itinerary exists
-            if not doc_ref.get().exists:
-                return jsonify({"error": "Itinerary not found"}), 404
-
-            # Update Firestore document
-            doc_ref.update(updated_data)
-
-            return jsonify({"message": "Itinerary updated successfully"}), 200
-
+            meta = itinerary_doc(user_id, trip_id).get().to_dict() or {}
+            return jsonify({
+                "message": "Itinerary saved & optimized",
+                "user_id": user_id,
+                "trip_id": trip_id,
+                "trip_name": meta.get("trip_name"),
+                "start_date": meta.get("start_date"),
+                "end_date": meta.get("end_date"),
+                "itinerary": optimized
+            }), 200
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            return jsonify({"error": f"Save/Optimize failed: {str(e)}"}), 500
 
     @diary_bp.route("/user-itinerary/<user_id>/<trip_id>", methods=["DELETE"])
     def delete_user_itinerary(user_id, trip_id):
         """Delete an entire itinerary and all its photos"""
         try:
-            doc_ref = db.collection("diary").document(user_id).collection("itineraries").document(trip_id)
+            doc_ref = itinerary_doc(user_id, trip_id)
 
             # Check if itinerary exists
             if not doc_ref.get().exists:
                 return jsonify({"error": "Itinerary not found"}), 404
 
             # Delete all photos in the itinerary first
-            photos_ref = doc_ref.collection("photos")
+            photos_ref = photos_col(user_id, trip_id)
             photos = photos_ref.stream()
-            
+
             for photo_doc in photos:
                 photo_data = photo_doc.to_dict()
                 file_path = photo_data.get("url", "").lstrip("/")
-                
+
                 # Delete file from disk
                 if file_path and os.path.exists(file_path):
                     os.remove(file_path)
-                
+
                 # Delete photo document
                 photo_doc.reference.delete()
 
@@ -92,7 +97,7 @@ def create_diary_bp(db):
             caption = request.form.get("caption", "")
 
             # Check if itinerary exists
-            itinerary_ref = db.collection("diary").document(user_id).collection("itineraries").document(trip_id)
+            itinerary_ref = itinerary_doc(user_id, trip_id)
             if not itinerary_ref.get().exists:
                 return jsonify({"error": "Itinerary not found"}), 404
 
@@ -199,14 +204,7 @@ def create_diary_bp(db):
         """
         try:
             # Get photo metadata first
-            photo_ref = (
-                db.collection("diary")
-                .document(user_id)
-                .collection("itineraries")
-                .document(trip_id)
-                .collection("photos")
-                .document(photo_id)
-            )
+            photo_ref = photos_col(user_id, trip_id).document(photo_id)
 
             doc = photo_ref.get()
             if not doc.exists:
@@ -337,4 +335,22 @@ def create_diary_bp(db):
 
         except Exception as e:
             return jsonify({"error": f"Stats fetch failed: {str(e)}"}), 500
+
+    @diary_bp.route("/user-itinerary/<user_id>/<trip_id>/proximity-optimize", methods=["POST"])
+    def reoptimize_itinerary(user_id, trip_id):
+        """Manual re-optimization for an existing itinerary."""
+        try:
+            optimized = optimize_itinerary_by_proximity(user_id, trip_id)
+            if not optimized:
+                return jsonify({"error": "Nothing to optimize"}), 404
+            itinerary_doc(user_id, trip_id).update({"itinerary": optimized})
+            return jsonify({
+                "message": "Itinerary re-optimized",
+                "user_id": user_id,
+                "trip_id": trip_id,
+                "itinerary": optimized
+            }), 200
+        except Exception as e:
+            return jsonify({"error": f"Optimization failed: {str(e)}"}), 500
+
     return diary_bp

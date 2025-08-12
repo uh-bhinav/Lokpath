@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify
 from datetime import datetime
 import uuid
+from diary.services.itinerary_pipeline import optimize_then_save_itinerary
+from diary.utils.firestore_paths import itineraries_col, itinerary_doc
 
 def create_progress_bp(db):
     """Create and return progress blueprint with database instance"""
@@ -20,10 +22,9 @@ def create_progress_bp(db):
             itinerary["created_at"] = datetime.now().isoformat()
             itinerary["trip_id"] = trip_id
 
-            doc_ref = db.collection("diary").document(user_id).collection("itineraries").document(trip_id)
-            doc_ref.set(itinerary)
+            optimized = optimize_then_save_itinerary(user_id, trip_id, itinerary)
 
-            return jsonify({"message": "Itinerary saved successfully", "trip_id": trip_id}), 200
+            return jsonify({"message": "Itinerary saved successfully", "trip_id": trip_id, "itinerary": optimized}), 200
 
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -31,7 +32,7 @@ def create_progress_bp(db):
     @progress_bp.route("/user-itineraries/<user_id>", methods=["GET"])
     def get_user_itineraries(user_id):
         try:
-            itineraries_ref = db.collection("diary").document(user_id).collection("itineraries")
+            itineraries_ref = itineraries_col(user_id)
             docs = itineraries_ref.stream()
 
             result = []
@@ -54,7 +55,7 @@ def create_progress_bp(db):
     @progress_bp.route("/user-itinerary/<user_id>/<trip_id>", methods=["GET"])
     def get_itinerary_by_id(user_id, trip_id):
         try:
-            itinerary_ref = db.collection("diary").document(user_id).collection("itineraries").document(trip_id)
+            itinerary_ref = itinerary_doc(user_id, trip_id)
             doc = itinerary_ref.get()
 
             if not doc.exists:

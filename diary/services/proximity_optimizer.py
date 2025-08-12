@@ -7,7 +7,7 @@ from copy import deepcopy
 # ✅ Fix Python import path to support running as script
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from diary.firebase.firebase_config import db
+from diary.utils.firestore_paths import itinerary_doc
 
 
 # -----------------------------
@@ -134,7 +134,7 @@ def optimize_itinerary_by_proximity(user_id: str, trip_id: str, backup_original:
       3) Split back into the same number of days (balanced)
       4) Overwrite itinerary in Firestore (optionally store backup once)
     """
-    doc_ref = db.collection("diary").document(user_id).collection("itineraries").document(trip_id)
+    doc_ref = itinerary_doc(user_id, trip_id)
     snap = doc_ref.get()
     doc = snap.to_dict() if snap.exists else None
 
