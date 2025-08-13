@@ -172,13 +172,15 @@ def create_guide_booking_bp(db_instance):
 
 
             final_eligible_guides = []
-            requested_specialties_set = set(s.title() for s in booking_criteria['specialties_needed'])
-            requested_languages_set = set(l.title() for l in booking_criteria['languages_needed'])
+            requested_specialties_set = {s.strip().title() for s in booking_criteria['specialties_needed']}
+            requested_languages_set = {l.strip().title() for l in booking_criteria['languages_needed']}
+            
 
             for doc in eligible_guide_candidates:
                 guide_data = doc.to_dict()
-                guide_specialties = set(guide_data.get('specialties', []))
-                guide_languages = set(guide_data.get('languages_spoken', []))
+                guide_specialties = {s.strip().title() for s in guide_data.get('specialties', [])}
+                guide_languages = {l.strip().title() for l in guide_data.get('languages_spoken', [])}
+                
 
             # Filter in Python based on languages
                 if requested_languages_set and not guide_languages.issuperset(requested_languages_set):

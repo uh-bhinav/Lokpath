@@ -425,12 +425,26 @@ def upload_to_firebase(session_id):
 
     try:
         if user_uid:
+            user_profile_ref = db.collection('users').document(user_uid)
+            user_doc = user_profile_ref.get() # <--- CHECK IF USER DOC EXISTS
+            
+            # --- NEW LOGIC START ---
+            if not user_doc.exists:
+                # If it doesn't exist, create it with initial data.
+                # This prevents the 'No document to update' error.
+                user_profile_ref.set({
+                    'submitted_gems_count': 0,
+                    'artisans_listed_count': 0,
+                    'cancellation_count': 0,
+                    'last_active': firestore.SERVER_TIMESTAMP
+                })
+            # --- NEW LOGIC END ---
+
             # Store a copy of the gem data in a subcollection under the user
             user_gems_ref = db.collection('users').document(user_uid).collection('hidden_gems_listed').document(session_id)
             user_gems_ref.set(final_data)
 
-            # Update the submitted_gems_count on the user's profile
-            user_profile_ref = db.collection('users').document(user_uid)
+            # Now it's safe to update the submitted_gems_count
             user_profile_ref.update({'submitted_gems_count': firestore.Increment(1)})
             current_app.logger.info(f"Incremented submitted_gems_count for user {user_uid}.")
 

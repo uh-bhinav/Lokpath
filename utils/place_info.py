@@ -1,7 +1,19 @@
 # utils.py
 
+import os 
+
 def load_google_api_key():
-    with open("credentials/google_api_key.txt", "r") as file:
+    """
+    Loads the Google API key from credentials/google_api_key.txt.
+    """
+    # ✅ Look in parent directory for credentials
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(parent_dir, "credentials", "google_api_key")
+    
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Google API key file not found at {path}")
+    
+    with open(path, "r") as file:
         return file.read().strip()
 # utils.py
 

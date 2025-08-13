@@ -1,7 +1,5 @@
 from flask import Blueprint, request, jsonify
-from datetime import datetime
-import uuid
-from diary.services.itinerary_pipeline import optimize_then_save_itinerary
+from diary.services.proximity_optimizer import optimize_itinerary_by_proximity
 from diary.utils.firestore_paths import itineraries_col, itinerary_doc
 
 def create_progress_bp(db):
@@ -13,18 +11,23 @@ def create_progress_bp(db):
         try:
             data = request.get_json()
             user_id = data.get("user_id")
+            trip_id = data.get("trip_id")
             itinerary = data.get("itinerary")
 
-            if not user_id or not itinerary:
-                return jsonify({"error": "Missing user_id or itinerary"}), 400
+            if not user_id:
+                return jsonify({"error": "Missing user_id "}), 400
 
-            trip_id = str(uuid.uuid4())
-            itinerary["created_at"] = datetime.now().isoformat()
-            itinerary["trip_id"] = trip_id
-
-            optimized = optimize_then_save_itinerary(user_id, trip_id, itinerary)
-
-            return jsonify({"message": "Itinerary saved successfully", "trip_id": trip_id, "itinerary": optimized}), 200
+            if trip_id and not itinerary:
+                ref = itinerary_doc(user_id, trip_id)
+                snap = ref.get()
+                if not snap.exists:
+                    return jsonify({"error": "Itinerary not found"}), 404
+                
+                optimized = optimize_itinerary_by_proximity(user_id, trip_id)
+                return jsonify({
+                    "message": "Itinerary optimized successfully",
+                    "trip_id": trip_id, 
+                    "itinerary": optimized}), 200
 
         except Exception as e:
             return jsonify({"error": str(e)}), 500
