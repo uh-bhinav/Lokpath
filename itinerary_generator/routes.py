@@ -61,7 +61,7 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
             data['days_of_travel'] = days_of_travel
         except ValueError:
             return jsonify({"error": "start_date and end_date must be valid ISO format dates (YYYY-MM-DDTHH:MM:SS.sssZ)."}), 400
-        
+
         user_input = {
             "user_id": user_uid,
             "start_date": data['start_date'],
@@ -142,7 +142,7 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
         except Exception as e:
             current_app.logger.error(f"Error in itinerary generation pipeline for user {user_uid}: {e}", exc_info=True)
             return jsonify({"error": "Failed to generate itinerary.", "details": str(e)}), 500
-            
+
     @itinerary_bp.route('/<itinerary_id>', methods=['GET'])
     @login_required_user
     def get_itinerary(itinerary_id):
@@ -173,7 +173,7 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
         itineraries.sort(key=lambda x: x.get('generated_at', firestore.SERVER_TIMESTAMP), reverse=True)
 
         return jsonify({"message": "User itineraries retrieved successfully", "itineraries": itineraries}), 200
-    
+
     @itinerary_bp.route('/<itinerary_id>/book-guide', methods=['POST'])
     @login_required_user
     def book_guide_for_itinerary(itinerary_id):
@@ -239,7 +239,7 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
         except Exception as e:
             current_app.logger.error(f"Error booking guide for itinerary {itinerary_id} for user {user_uid}: {e}", exc_info=True)
             return jsonify({"error": "Failed to book guide for itinerary.", "details": str(e)}), 500
-        
+
     @itinerary_bp.route('/<itinerary_id>/book-guide/segments', methods=['POST'])
     @login_required_user
     def book_guide_for_itinerary_segments(itinerary_id):
@@ -310,5 +310,274 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
             current_app.logger.error(f"Error booking guide for itinerary segments {itinerary_id} for user {user_uid}: {e}", exc_info=True)
             return jsonify({"error": "Failed to book guide for itinerary segments.", "details": str(e)}), 500
 
+
+    @itinerary_bp.route('/<itinerary_id>/days/<int:day_number>/items/<int:item_index>', methods=['DELETE'])
+    @login_required_user
+    def delete_itinerary_item(itinerary_id, day_number, item_index):
+            """Delete a single POI from a specific day in the itinerary by index.
+            - Path: /itinerary/<itinerary_id>/days/<day_number>/items/<item_index>
+            - Day numbering is 1-based (matches 'Day 1', 'Day 2', ...)
+            - Only removes the specified POI; other POIs remain untouched.
+            """
+            user_uid = session.get('user_uid')
+            if not user_uid:
+                return jsonify({"error": "Authentication required."}), 401
+
+            try:
+                # 1) Locate itinerary doc under unified path: /users/{uid}/itineraries/{itinerary_id}
+                doc_ref = db_instance.collection('users').document(user_uid) \
+                    .collection('itineraries').document(itinerary_id)
+                snap = doc_ref.get()
+                if not snap.exists:
+                    return jsonify({"error": "Itinerary not found for this user."}), 404
+
+                doc = snap.to_dict() or {}
+                itinerary = doc.get('itinerary', {})
+                if not isinstance(itinerary, dict) or not itinerary:
+                    return jsonify({"error": "Invalid itinerary structure."}), 400
+
+                # 2) Resolve day key and validate index
+                day_key = f"Day {day_number}"
+                day_list = itinerary.get(day_key)
+                if not isinstance(day_list, list):
+                    return jsonify({"error": f"{day_key} not found."}), 404
+                if item_index < 0 or item_index >= len(day_list):
+                    return jsonify({"error": f"item_index {item_index} out of range for {day_key}."}), 400
+
+                # 3) Remove only the targeted POI
+                removed = day_list.pop(item_index)
+                itinerary[day_key] = day_list
+
+                # 4) Recompute poi_count and persist the update
+                poi_count = sum(len(day) for day in itinerary.values())
+                doc_ref.update({
+                    'itinerary': itinerary,
+                    'poi_count': poi_count,
+                    'updated_at': firestore.SERVER_TIMESTAMP
+                })
+
+                return jsonify({
+                    'message': 'POI deleted from itinerary',
+                    'itinerary_id': itinerary_id,
+                    'day': day_key,
+                    'removed': removed,
+                    'poi_count': poi_count,
+                    'itinerary': itinerary
+                }), 200
+
+            except Exception as e:
+                current_app.logger.error(f"Failed to delete item from itinerary {itinerary_id}: {e}", exc_info=True)
+                return jsonify({"error": "Failed to delete item.", "details": str(e)}), 500
+
+
+
+    @itinerary_bp.route('/<itinerary_id>/replenish-missing-pois', methods=['POST'])
+    @login_required_user
+    def replenish_missing_pois(itinerary_id):
+        """Replenish missing POIs after deletions, then re-optimize by proximity.
+        Logic:
+          - Compute required_total = num_days * max_per_day
+          - If current < required, fetch candidate POIs for the same location
+          - Deduplicate vs existing, take first `missing` items
+          - Append to itinerary, persist, then call optimizer
+          - Return final optimized itinerary with counts
+        """
+        user_uid = session.get('user_uid')
+        if not user_uid:
+            return jsonify({"error": "Authentication required."}), 401
+
+        body = request.get_json(silent=True) or {}
+        dry_run = bool(body.get('dry_run', False))
+        limit_factor = int(body.get('limit_factor', 2))
+        if limit_factor < 1:
+            limit_factor = 1
+
+        try:
+            # Helpers (kept local for reliability)
+            def _poi_key(poi: dict) -> str:
+                pid = poi.get('place_id') or poi.get('google_place_id')
+                if pid:
+                    return f"id:{pid}"
+                name = (poi.get('name') or '').strip().lower()
+                loc = poi.get('location') or poi.get('coordinates') or {}
+                lat = loc.get('lat'); lng = loc.get('lng')
+                if lat is None or lng is None:
+                    return f"name:{name}"
+                return f"name:{name}|geo:{round(float(lat), 6)},{round(float(lng), 6)}"
+
+            def _existing_keys(itin: dict) -> set:
+                keys = set()
+                for day_list in (itin or {}).values():
+                    if isinstance(day_list, list):
+                        for p in day_list:
+                            keys.add(_poi_key(p))
+                return keys
+
+            def _flatten_itinerary(itin: dict) -> list:
+                flat = []
+                for day_list in (itin or {}).values():
+                    if isinstance(day_list, list):
+                        flat.extend(day_list)
+                return flat
+
+            # 1) Load itinerary doc
+            doc_ref = db_instance.collection('users').document(user_uid) \
+                .collection('itineraries').document(itinerary_id)
+            snap = doc_ref.get()
+            if not snap.exists:
+                return jsonify({"error": "Itinerary not found for this user."}), 404
+
+            doc = snap.to_dict() or {}
+            itinerary = doc.get('itinerary', {}) or {}
+            if not isinstance(itinerary, dict) or not itinerary:
+                return jsonify({"error": "Invalid itinerary structure."}), 400
+
+            # 2) Compute required and current counts
+            day_keys = [k for k in itinerary.keys() if isinstance(k, str) and k.lower().startswith('day ')]
+            num_days = len(day_keys) if day_keys else 1
+            # prefer stored meta.max_per_day if present; fallback to builder default 2
+            max_per_day = (doc.get('meta', {}) or {}).get('max_per_day') or 2
+            required_total = int(num_days) * int(max_per_day)
+
+            current_flat = _flatten_itinerary(itinerary)
+            current_count = len(current_flat)
+            missing = required_total - current_count
+
+            if missing <= 0:
+                return jsonify({
+                    'message': 'No replenishment needed',
+                    'itinerary_id': itinerary_id,
+                    'required_total': required_total,
+                    'current_count': current_count,
+                    'added': 0,
+                    'missing_after': 0,
+                    'itinerary': itinerary
+                }), 200
+
+            # 3) Build preferences for fetching candidates (best effort based on stored fields)
+            location = doc.get('location') or doc.get('city')
+            if not location:
+                return jsonify({"error": "Cannot determine location for itinerary."}), 400
+
+            user_input = {
+                'location': location,
+                # Leave filters broad; generator will score/shape them later
+                'selected_interests': (doc.get('preferences', {}) or {}).get('selected_interests', []),
+                'budget': (doc.get('preferences', {}) or {}).get('budget', 'unknown'),
+                'with_pets': (doc.get('preferences', {}) or {}).get('with_pets', False),
+                'with_disabilities': (doc.get('preferences', {}) or {}).get('with_disabilities', False),
+            }
+
+            # 4) Fetch candidate POIs and dedupe
+            candidates = get_filtered_pois(user_input) or []
+            # Limit scan to reduce CPU if huge
+            cap = max(missing * limit_factor, missing)
+            candidates = candidates[: max(cap, 0)]
+
+            existing_keys = _existing_keys(itinerary)
+            picked = []
+            picked_keys = set()
+
+            # Map candidates into itinerary activity shape (mirror generate_itinerary)
+            from Itinerarybuilder.itinerary_builder import TAG_TO_BEST_TIME
+
+            def _activity_from_candidate(poi: dict) -> dict:
+                best_time = poi.get('best_time') or 'Anytime'
+                if best_time == 'Anytime':
+                    for tag in poi.get('tags', []) or []:
+                        if tag in TAG_TO_BEST_TIME:
+                            best_time = TAG_TO_BEST_TIME[tag]
+                            break
+                return {
+                    'name': poi.get('name', ''),
+                    'tags': poi.get('tags', []) or [],
+                    'best_time': best_time,
+                    'budget_category': poi.get('budget_category', 'unknown'),
+                    'disclaimer': poi.get('disclaimer', ''),
+                    'photo_url': poi.get('photo_url', ''),
+                    'coordinates': poi.get('coordinates', {})
+                }
+
+            for poi in candidates:
+                key = _poi_key(poi)
+                if key in existing_keys or key in picked_keys:
+                    continue
+                picked.append(_activity_from_candidate(poi))
+                picked_keys.add(key)
+                if len(picked) >= missing:
+                    break
+
+            added = len(picked)
+            if added == 0:
+                return jsonify({
+                    'message': 'No suitable new POIs found for replenishment',
+                    'itinerary_id': itinerary_id,
+                    'required_total': required_total,
+                    'previous_count': current_count,
+                    'added': 0,
+                    'current_count': current_count,
+                    'missing_after': required_total - current_count,
+                    'itinerary': itinerary
+                }), 206
+
+            if dry_run:
+                return jsonify({
+                    'message': 'Dry run: POIs would be replenished',
+                    'itinerary_id': itinerary_id,
+                    'required_total': required_total,
+                    'previous_count': current_count,
+                    'added': added,
+                    'current_count': current_count + added,
+                    'missing_after': max(0, required_total - (current_count + added)),
+                    'preview_added': picked,
+                    'itinerary': itinerary
+                }), 200
+
+            # 5) Append picked items into itinerary (temporary; optimizer will redistribute by proximity)
+            # Append to Day 1 list to ensure optimizer picks them up
+            day1_key = day_keys[0] if day_keys else 'Day 1'
+            itinerary.setdefault(day1_key, [])
+            itinerary[day1_key].extend(picked)
+
+            # 6) Persist and optimize
+            new_count = current_count + added
+            poi_count = sum(len(day) for day in itinerary.values())
+            doc_ref.update({
+                'itinerary': itinerary,
+                'poi_count': poi_count,
+                'updated_at': firestore.SERVER_TIMESTAMP
+            })
+
+            # Import optimizer locally to avoid circular imports
+            try:
+                from diary.services.proximity_optimizer import optimize_itinerary_by_proximity
+                optimize_itinerary_by_proximity(user_uid, itinerary_id)
+            except Exception as e:
+                current_app.logger.error(f"Optimizer failed for {itinerary_id}: {e}")
+                # Proceed without failing request; return non-optimized but updated itinerary
+
+            # Re-read after optimization (if succeeded)
+            snap2 = doc_ref.get()
+            final_doc = snap2.to_dict() or {}
+            final_itin = final_doc.get('itinerary', itinerary)
+            final_count = sum(len(day) for day in (final_itin or {}).values())
+
+            status_msg = 'Itinerary replenished and re-optimized' if final_itin != itinerary else 'Itinerary replenished (no optimization applied)'
+            partial = final_count < required_total
+
+            return jsonify({
+                'message': ('Partial replenish: not enough unique POIs available' if partial else status_msg),
+                'itinerary_id': itinerary_id,
+                'required_total': required_total,
+                'previous_count': current_count,
+                'added': added,
+                'current_count': final_count,
+                'missing_after': max(0, required_total - final_count),
+                'itinerary': final_itin
+            }), 200
+
+        except Exception as e:
+            current_app.logger.error(f"Replenish failed for itinerary {itinerary_id}: {e}", exc_info=True)
+            return jsonify({'error': 'Failed to replenish itinerary.', 'details': str(e)}), 500
 
     return itinerary_bp
