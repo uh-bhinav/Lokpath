@@ -5,11 +5,10 @@ from user_auth.utils import login_required_user
 import datetime
 import dateutil.parser
 import uuid
-from flask import Blueprint, request, jsonify, session, current_app
-from firebase_admin import firestore
-from user_auth.utils import login_required_user
-import datetime
-import uuid
+
+from itinerary_generator.utils import ranking_utils, suggestion_utils, normalization_utils
+from itinerary_generator.utils.firestore_utils import get_places_for_location
+from itinerary_generator.utils.google_places_utils import fetch_places_from_google
 # --- Import all of your teammate's modules ---
 from Itinerarybuilder.itinerary_builder import generate_itinerary, TAG_TO_BEST_TIME
 from Itinerarybuilder.query_firestore import get_filtered_pois
@@ -580,3 +579,67 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
             current_app.logger.error(f"Replenish failed for itinerary {itinerary_id}: {e}", exc_info=True)
             return jsonify({'error': 'Failed to replenish itinerary.', 'details': str(e)}), 500
 
+    @itinerary_bp.route("/search-place", methods=["POST"])
+    def search_place():
+        """
+        Search for POIs to manually replenish an itinerary.
+        Priority:
+        1. Firestore places/{location}/poi_list
+        2. Google Places API (normalized + stored)
+        3. hidden_gems/{location}/poi_list
+        Returns ranked raw JSON results.
+        """
+        data = request.get_json()
+        user_id = data.get("user_id")
+        itinerary_id = data.get("itinerary_id")
+        query = data.get("query")
+
+        if not user_id or not itinerary_id or not query:
+            return jsonify({"error": "user_id, itinerary_id, and query are required"}), 400
+
+        # 1. Fetch itinerary to infer location
+        itinerary_ref = db_instance.collection("users").document(user_id).collection("itineraries").document(itinerary_id)
+        itinerary_doc = itinerary_ref.get()
+        if not itinerary_doc.exists:
+            return jsonify({"error": "Itinerary not found"}), 404
+
+        location = itinerary_doc.to_dict().get("location")
+        if not location:
+            return jsonify({"error": "Itinerary missing location"}), 400
+
+        results = []
+
+        # 2. Use NLP to detect category vs. specific place
+        query_type = suggestion_utils.classify_query(query)
+
+        # 3. Check Firestore POIs
+        firestore_pois = get_places_for_location(db_instance, location, query, query_type)
+        for poi in firestore_pois:
+            poi["source"] = "firestore"
+        results.extend(firestore_pois)
+
+        # 4. If not enough, call Google Places
+        if len(results) < 5:
+            google_places = fetch_places_from_google(query, location)
+            normalized = [
+                normalization_utils.normalize_place(place, location) for place in google_places
+            ]
+            # Persist to Firestore
+            for poi in normalized:
+                db_instance.collection("places").document(location).collection("poi_list").document(poi["place_id"]).set(poi)
+                poi["source"] = "google_places"
+            results.extend(normalized)
+
+        # 5. If still not enough, fallback to hidden gems
+        if len(results) < 5:
+            hidden_gems_ref = db_instance.collection("hidden_gems").document(location).collection("poi_list")
+            hidden_gems = [doc.to_dict() for doc in hidden_gems_ref.stream()]
+            for poi in hidden_gems:
+                poi["source"] = "hidden_gems"
+                poi["is_hidden_gem"] = True
+            results.extend(hidden_gems)
+
+        # 6. Rank and return
+        ranked_results = ranking_utils.rank_pois(results)
+
+        return jsonify(ranked_results), 200
