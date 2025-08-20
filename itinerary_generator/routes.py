@@ -580,4 +580,3 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
             current_app.logger.error(f"Replenish failed for itinerary {itinerary_id}: {e}", exc_info=True)
             return jsonify({'error': 'Failed to replenish itinerary.', 'details': str(e)}), 500
 
-    return itinerary_bp
