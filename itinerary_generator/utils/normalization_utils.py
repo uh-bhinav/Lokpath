@@ -1,61 +1,75 @@
-# Lokpath/itinerary_generator/utils/normalization_utils.py
+# itinerary_generator/utils/normalization_utils.py
+"""
+Normalization utilities to align external POI data (Google Places, etc.)
+into the canonical Firestore schema under:
+  /places/{location}/poi_list/{place_id}
+"""
+import os
 
-from typing import Dict, Any, Optional
-import unicodedata
-
-# Note: Keep only helpers that do not duplicate Itinerarybuilder utils.
-# We intentionally avoid duplicating fetch/price mapping/etc.
+from typing import Dict, Any, List
+from datetime import datetime
 
 
-def normalize_text(value: str) -> str:
-    """Normalize text for case-insensitive and accent-insensitive matching.
-    - Lowercases
-    - Strips/condenses whitespace
-    - Removes diacritics (accents)
+def normalize_place(place: Dict[str, Any], location: str) -> Dict[str, Any]:
     """
-    if not isinstance(value, str):
-        return ""
-    # Remove accents
-    no_accents = unicodedata.normalize("NFKD", value)
-    no_accents = "".join(ch for ch in no_accents if not unicodedata.combining(ch))
-    # Lower and collapse whitespace
-    lowered = no_accents.lower()
-    return " ".join(lowered.split())
-
-
-def _extract_photo_reference(place: Dict[str, Any]) -> Optional[str]:
-    """Extracts the photo reference from a Google Places API response, if available."""
-    photos = place.get("photos") if isinstance(place, dict) else None
-    if photos and isinstance(photos, list) and photos and isinstance(photos[0], dict):
-        return photos[0].get("photo_reference")
-    return None
-
-
-def normalize_google_place(place: Dict[str, Any]) -> Dict[str, Any]:
-    """Lightweight normalization for Google Places payload if needed by callers.
-    This does not duplicate any Itinerarybuilder transformation logic.
+    Normalize a raw Google Places result into Firestore's schema.
     """
     return {
-        "poi_id": place.get("place_id"),
-        "name": place.get("name"),
-        "address": place.get("formatted_address") or place.get("vicinity", ""),
-        "rating": place.get("rating", 0.0),
+        "place_id": place.get("place_id", ""),
+        "name": place.get("name", ""),
+        "coordinates": {
+            "lat": place.get("geometry", {}).get("location", {}).get("lat", 0.0),
+            "lng": place.get("geometry", {}).get("location", {}).get("lng", 0.0),
+        },
+        "rating": place.get("rating"),
+        "user_ratings_total": place.get("user_ratings_total", 0),
+        "price_level": place.get("price_level"),  # may be null
+        "budget_category": place.get("budget_category", "unknown"),
+        "photo_url": _extract_photo_url(place),
+        "tags": _derive_tags(place),
         "types": place.get("types", []),
-        "photo_reference": _extract_photo_reference(place),
+        "kid_friendly": place.get("kid_friendly", False),
+        "pet_friendly": place.get("pet_friendly", False),
+        "wheelchair_accessible": place.get("wheelchair_accessible", False),
+        "disclaimer": place.get("disclaimer", ""),
         "source": "google_places",
-        "tags": [],
+        "visit_count": place.get("visit_count", 0),   # ensure consistency
+        "created_at": datetime.utcnow().isoformat(),
     }
 
 
-def normalize_firestore_place(place_id: str, place_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize a Firestore POI entry into a simple POI format for suggestions."""
-    return {
-        "poi_id": place_id,
-        "name": place_data.get("name", ""),
-        "address": place_data.get("address", ""),
-        "rating": place_data.get("rating", 0.0),
-        "types": place_data.get("types", []),
-        "photo_reference": place_data.get("photo_reference"),
-        "source": "firestore",
-        "tags": place_data.get("tags", []),
-    }
+def _extract_photo_url(place: Dict[str, Any]) -> str:
+    """
+    Extract a usable photo URL if present.
+    """
+    api_key = os.getenv("GOOGLE_MAPS_API_KEY", "YOUR_API_KEY")
+    photos = place.get("photos", [])
+    if photos:
+        ref = photos[0].get("photo_reference")
+        if ref:
+            return f"https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference={ref}&key={api_key}"
+    return place.get("photo_url", "")  # fallback if already enriched
+
+
+def _derive_tags(place: Dict[str, Any]) -> List[str]:
+    """
+    Derive human-friendly tags from the raw data.
+    """
+    tags: List[str] = []
+    types = place.get("types", [])
+    name = (place.get("name") or "").lower()
+
+    if "park" in types or "natural_feature" in types or "tourist_attraction" in types:
+        tags.append("nature")
+    if "waterfall" in name:
+        tags.extend(["photogenic", "adventurous"])
+    if place.get("rating", 0) >= 4.5:
+        tags.append("romantic")
+    if place.get("kid_friendly"):
+        tags.append("family-friendly")
+    if "temple" in types or "garden" in types:
+        tags.append("peaceful")
+
+    # Extend with pre-assigned tags and deduplicate
+    tags.extend(place.get("tags", []))
+    return sorted(set(tags))
