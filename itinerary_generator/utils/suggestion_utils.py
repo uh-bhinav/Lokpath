@@ -5,7 +5,7 @@
 """
 from typing import List, Dict, Any
 from .google_places_utils import fetch_google_places
-from .normalization_utils import normalize_text
+from .normalization_utils import normalize_text, normalize_place
 
 
 def get_default_suggestions(db, location: str, limit: int = 10) -> List[Dict[str, Any]]:

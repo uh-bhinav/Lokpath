@@ -58,6 +58,40 @@ def create_user_bp(db_instance): # This function will now create and return the 
                 return jsonify({"error": "Could not retrieve basic user info."}), 500
 
 
+    @user_bp.route('/login', methods=['POST'])
+    def login_user():
+        """
+        Verifies a Firebase ID token and creates a server-side session.
+        This is the main entry point for a user to log in to the backend.
+        """
+        try:
+            # 1. Get the token sent from the client
+            id_token = request.json.get('idToken')
+            if not id_token:
+                return jsonify({"error": "ID token is required."}), 400
+
+            # 2. Verify the token with Firebase Admin SDK
+            # This checks if the token is valid and not expired.
+            decoded_token = auth.verify_id_token(id_token)
+            user_uid = decoded_token['uid']
+
+            # 3. Create the session (give the "wristband")
+            # The session cookie is sent back to the client automatically by Flask.
+            session['user_uid'] = user_uid
+            
+            # Optionally, update the user's last_active timestamp in Firestore
+            user_ref = db_instance.collection('users').document(user_uid)
+            user_ref.set({'last_active': firestore.SERVER_TIMESTAMP}, merge=True)
+
+            current_app.logger.info(f"User {user_uid} logged in successfully.")
+            return jsonify({"message": "User logged in successfully"}), 200
+
+        except auth.InvalidIdTokenError:
+            return jsonify({"error": "Invalid or expired ID token."}), 401
+        except Exception as e:
+            current_app.logger.error(f"Login error: {e}")
+            return jsonify({"error": "An unexpected error occurred during login."}), 500
+
     @user_bp.route('/profile', methods=['POST'])
     @login_required_user
     def update_user_profile():

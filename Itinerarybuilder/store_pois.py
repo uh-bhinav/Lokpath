@@ -2,7 +2,7 @@
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from utils.firebase_utils import get_service_account_path
+from .utils.firebase_utils import get_service_account_path
 from google.api_core.exceptions import GoogleAPIError
 import datetime
 

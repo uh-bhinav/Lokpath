@@ -5,6 +5,7 @@ import json
 from user_auth.utils import login_required_user 
 load_dotenv()
 from flask import Flask, request, jsonify, session, current_app
+from flask import send_from_directory
 from shared_globals import session_store, allowed_file, reverse_geocode, extract_simplified_region, extract_state_city_from_google
 from werkzeug.utils import secure_filename
 from collections import Counter
@@ -465,6 +466,42 @@ def push_to_firestore(state_name, city_name, session_id, data):
 
     gem_submission_doc_ref.set(data)
     current_app.logger.info(f"Hidden gem {session_id} added to Firestore under State: {state_name}, City: {city_name}.")
+
+
+@app.route('/uploads/<path:filename>')
+def uploaded_file(filename):
+    # Note: Ensure your main app has an 'uploads' folder
+    return send_from_directory("uploads", filename)
+
+@app.route("/user-itinerary/<user_id>/diary-feed", methods=["GET"])
+def diary_feed(user_id):
+    root_path = os.path.join("uploads", "diary_photos", user_id)
+    if not os.path.exists(root_path):
+        return jsonify({"message": "No trips found", "photos": []})
+
+    all_photos = []
+
+    for trip_id in os.listdir(root_path):
+        trip_folder = os.path.join(root_path, trip_id)
+        meta_file = os.path.join(trip_folder, "photo_metadata.json")
+
+        if os.path.exists(meta_file):
+            with open(meta_file, "r") as f:
+                try:
+                    trip_photos = json.load(f)
+                    for p in trip_photos:
+                        p["trip_id"] = trip_id
+                        all_photos.append(p)
+                except Exception as e:
+                    print(f"Error loading metadata for {trip_id}: {e}")
+
+    all_photos.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    return jsonify({
+        "user_id": user_id,
+        "photo_count": len(all_photos),
+        "photos": all_photos
+    })
 
 
 if __name__ == '__main__':

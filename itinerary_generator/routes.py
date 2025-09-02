@@ -7,8 +7,8 @@ import dateutil.parser
 import uuid
 
 from itinerary_generator.utils import ranking_utils, suggestion_utils, normalization_utils
-from itinerary_generator.utils.firestore_utils import get_places_for_location
-from itinerary_generator.utils.google_places_utils import fetch_places_from_google
+# from itinerary_generator.utils.firestore_utils import get_places_for_location
+# from itinerary_generator.utils.google_places_utils import fetch_places_from_google
 # --- Import all of your teammate's modules ---
 from Itinerarybuilder.itinerary_builder import generate_itinerary, TAG_TO_BEST_TIME
 from Itinerarybuilder.query_firestore import get_filtered_pois
@@ -20,6 +20,8 @@ from Itinerarybuilder.store_pois import store_pois
 from Itinerarybuilder.utils.itinerary_utils import estimate_required_pois, infer_kid_friendly
 from Itinerarybuilder.utils.place_info import map_price_level
 from shared_globals import session_store # Ensure session_store is imported if needed elsewhere
+from Itinerarybuilder.fetch_places import search_places_autocomplete, get_place_details
+from utils.place_info import load_google_api_key
 
 def create_itinerary_bp(db_instance): # Function to create and return the blueprint
     itinerary_bp = Blueprint('itinerary_bp', __name__, url_prefix='/itinerary')
@@ -643,3 +645,42 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
         ranked_results = ranking_utils.rank_pois(results)
 
         return jsonify(ranked_results), 200
+    
+    @itinerary_bp.route("/places/autocomplete", methods=["POST"])
+    @login_required_user
+    def places_autocomplete():
+        """
+        Provides search-as-you-type suggestions for places.
+        Body: { "query": "Lalbagh", "location": "Bengaluru" }
+        """
+        data = request.get_json()
+        query = data.get("query")
+        location = data.get("location")
+
+        if not query or not location:
+            return jsonify({"error": "query and location are required"}), 400
+
+        try:
+            api_key = load_google_api_key()
+            suggestions = search_places_autocomplete(query, location, api_key)
+            return jsonify(suggestions), 200
+        except Exception as e:
+            current_app.logger.error(f"Autocomplete failed: {e}")
+            return jsonify({"error": "Failed to fetch suggestions."}), 500
+
+
+    @itinerary_bp.route("/places/details/<place_id>", methods=["GET"])
+    @login_required_user
+    def get_place_details_by_id(place_id):
+        """
+        Gets the full, normalized details for a place selected from autocomplete.
+        """
+        try:
+            api_key = load_google_api_key()
+            details = get_place_details(place_id, api_key)
+            return jsonify(details), 200
+        except Exception as e:
+            current_app.logger.error(f"Place details failed for {place_id}: {e}")
+            return jsonify({"error": "Failed to fetch place details."}), 500
+        
+    return itinerary_bp

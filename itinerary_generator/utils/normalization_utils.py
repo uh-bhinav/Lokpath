@@ -73,3 +73,12 @@ def _derive_tags(place: Dict[str, Any]) -> List[str]:
     # Extend with pre-assigned tags and deduplicate
     tags.extend(place.get("tags", []))
     return sorted(set(tags))
+
+def normalize_text(text: str) -> str:
+    """
+    Normalizes text for searching by converting to lowercase and stripping whitespace.
+    Handles non-string inputs gracefully.
+    """
+    if not isinstance(text, str):
+        return ""
+    return text.lower().strip()

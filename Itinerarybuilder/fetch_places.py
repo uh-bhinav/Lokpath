@@ -8,6 +8,8 @@ from utils.place_info import load_google_api_key, map_price_level
 
 GOOGLE_PLACES_API_URL = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 GEOCODE_API_URL = "https://maps.googleapis.com/maps/api/geocode/json"
+AUTOCOMPLETE_API_URL = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
+PLACE_DETAILS_API_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
 # 🔹 Optional: In-memory cache for coordinates to avoid repeat Geocode API calls
 _location_cache = {}
@@ -157,3 +159,78 @@ def fetch_places(location, max_results=100, radius=15000, use_cache=True):
         _places_cache[cache_key] = trimmed
         _save_cache(_places_cache)
     return trimmed
+
+def search_places_autocomplete(query, location, api_key):
+    """
+    Fetches place autocomplete suggestions from Google.
+    This is for the search-as-you-type functionality.
+    """
+    # Get coordinates to provide a location bias for more relevant results
+    coords = get_coordinates_for_location(location, api_key)
+    lat_lng = f"{coords['lat']},{coords['lng']}"
+
+    params = {
+        "input": query,
+        "location": lat_lng,
+        "radius": 20000,  # Bias results within a 20km radius of the location
+        "key": api_key,
+        "types": "establishment" # Focus on specific places, not cities or regions
+    }
+    
+    response = requests.get(AUTOCOMPLETE_API_URL, params=params).json()
+
+    if response["status"] != "OK":
+        return []
+
+    # Format the results into a clean list
+    suggestions = [
+        {
+            "description": prediction["description"],
+            "place_id": prediction["place_id"]
+        }
+        for prediction in response.get("predictions", [])
+    ]
+    
+    return suggestions
+
+
+# 🔽 ADD THIS NEW FUNCTION FOR PLACE DETAILS 🔽
+def get_place_details(place_id, api_key):
+    """
+    Fetches full details for a single place using its place_id
+    and normalizes it into our standard POI format.
+    """
+    params = {
+        "place_id": place_id,
+        "fields": "name,place_id,geometry,rating,user_ratings_total,price_level,types,photos",
+        "key": api_key
+    }
+    
+    response = requests.get(PLACE_DETAILS_API_URL, params=params).json()
+
+    if response["status"] != "OK":
+        raise ValueError(f"Could not fetch details for place_id {place_id}. API status: {response.get('status')}")
+
+    place = response.get("result", {})
+
+    # Normalize the detailed result into our app's data structure
+    photo_reference = (place.get("photos", [{}])[0].get("photo_reference")) if place.get("photos") else None
+    budget = map_price_level(place.get("price_level"))
+    disclaimer = "Price info not available" if budget == "unknown" else ""
+
+    normalized_place = {
+        "place_id": place["place_id"],
+        "name": place["name"],
+        "rating": place.get("rating"),
+        "user_ratings_total": place.get("user_ratings_total"),
+        "price_level": place.get("price_level"),
+        "budget_category": budget,
+        "types": place.get("types", []),
+        "coordinates": place.get("geometry", {}).get("location"),
+        "photo_url": construct_photo_url(photo_reference, api_key),
+        "disclaimer": disclaimer,
+        "estimated_visit_duration": estimate_duration_from_types(place.get("types", [])),
+        "source": "google_places"
+    }
+
+    return normalized_place
