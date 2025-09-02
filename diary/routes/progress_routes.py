@@ -6,28 +6,43 @@ def create_progress_bp(db):
     """Create and return progress blueprint with database instance"""
     progress_bp = Blueprint("progress", __name__, url_prefix="/progress")
 
+   # In progress_routes.py
+
     @progress_bp.route("/save-itinerary", methods=["POST"])
     def save_itinerary():
         try:
             data = request.get_json()
             user_id = data.get("user_id")
             trip_id = data.get("trip_id")
-            itinerary = data.get("itinerary")
+            # itinerary = data.get("itinerary") # This is not used in the optimization flow
 
-            if not user_id:
-                return jsonify({"error": "Missing user_id "}), 400
+            if not user_id or not trip_id:
+                return jsonify({"error": "Missing user_id or trip_id"}), 400
 
-            if trip_id and not itinerary:
-                ref = itinerary_doc(user_id, trip_id)
-                snap = ref.get()
-                if not snap.exists:
-                    return jsonify({"error": "Itinerary not found"}), 404
-                
-                optimized = optimize_itinerary_by_proximity(user_id, trip_id)
-                return jsonify({
-                    "message": "Itinerary optimized successfully",
-                    "trip_id": trip_id, 
-                    "itinerary": optimized}), 200
+            # ## MODIFIED: Define budgets to pass to the optimizer
+            # In a real app, these values might come from the user's profile or request body
+            activity_budget = 7.5  # Default moderate pace
+            travel_budget = 2.0    # Default leisurely travel
+
+            # This part of your logic triggers the optimization
+            ref = itinerary_doc(user_id, trip_id)
+            snap = ref.get()
+            if not snap.exists:
+                return jsonify({"error": "Itinerary not found"}), 404
+            
+            # ## MODIFIED: Pass the budgets to the optimizer function
+            optimized = optimize_itinerary_by_proximity(
+                user_id,
+                trip_id,
+                daily_time_budget=activity_budget,
+                max_daily_travel_hours=travel_budget
+            )
+            
+            return jsonify({
+                "message": "Itinerary optimized successfully",
+                "trip_id": trip_id, 
+                "itinerary": optimized
+            }), 200
 
         except Exception as e:
             return jsonify({"error": str(e)}), 500

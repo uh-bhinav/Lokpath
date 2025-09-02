@@ -34,6 +34,33 @@ def _save_cache(cache):
 
 _places_cache = _load_cache()
 
+# 🔽 ADD THIS NEW HELPER FUNCTION 🔽
+def estimate_duration_from_types(types):
+    """Estimates visit duration in hours based on Google Places types."""
+
+    # This mapping is prioritized. 'museum' is checked before 'point_of_interest'.
+    duration_mapping = {
+        "museum": 2.5,
+        "art_gallery": 2.0,
+        "amusement_park": 4.0,
+        "park": 1.5,
+        "zoo": 3.0,
+        "tourist_attraction": 1.5,
+        "hindu_temple": 1.0,
+        "church": 1.0,
+        "mosque": 1.0,
+        "point_of_interest": 0.75,
+        "landmark": 0.75
+    }
+
+    for place_type, duration in duration_mapping.items():
+        if place_type in types:
+            return duration
+
+    # If no specific type matches, return a sensible default.
+    return 1.5 # Default duration
+
+
 def get_coordinates_for_location(location, api_key):
     """Fetch dynamic lat/lng for a location using Google Geocoding API (with caching)."""
     if location in _location_cache:
@@ -100,20 +127,23 @@ def fetch_places(location, max_results=100, radius=15000, use_cache=True):
             disclaimer = "Price info not available" if budget == "unknown" else ""
 
             place_data = {
-                "place_id": place["place_id"],
-                "name": place["name"],
-                "rating": place.get("rating"),
-                "user_ratings_total": place.get("user_ratings_total"),
-                "price_level": place.get("price_level"),
-                "budget_category": budget,
-                "types": place.get("types", []),
-                "coordinates": place["geometry"]["location"],
-                "photo_url": construct_photo_url(photo_reference, api_key),
-                "disclaimer": disclaimer
-            }
+            "place_id": place["place_id"],
+            "name": place["name"],
+            "rating": place.get("rating"),
+            "user_ratings_total": place.get("user_ratings_total"),
+            "price_level": place.get("price_level"),
+            "budget_category": budget,
+            "types": place.get("types", []),
+            "coordinates": place["geometry"]["location"],
+            "photo_url": construct_photo_url(photo_reference, api_key),
+            "disclaimer": disclaimer,
+            # 🔽 ADD THIS LINE 🔽
+            "estimated_visit_duration": estimate_duration_from_types(place.get("types", []))
+        }
 
             results.append(place_data)
             seen_place_ids.add(place["place_id"])
+
 
         # ✅ Handle pagination
         if "next_page_token" in data:

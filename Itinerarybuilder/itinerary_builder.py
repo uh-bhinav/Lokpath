@@ -165,6 +165,35 @@ def debug_firebase_structure():
 # This duplicate function is removed to avoid conflicts
 
 
+
+# 🔽 ADD THIS NEW HELPER FUNCTION AT THE TOP OF itinerary_builder.py 🔽
+def calculate_poi_score(poi, user_input):
+    """Calculates a 'match score' for a POI based on user preferences."""
+    score = 0.0
+    user_tags = set(user_input.get("selected_interests", []))
+    
+    # 1. Score based on Google Rating
+    score += poi.get("rating", 0) * 5
+    
+    # 2. Score based on matching tags (+20 for each match)
+    poi_tags = set(poi.get("tags", []))
+    matching_tags_count = len(user_tags.intersection(poi_tags))
+    score += matching_tags_count * 20
+    
+    # 3. Bonus for being a Hidden Gem (+10)
+    if "gem_id" in poi: # Hidden gems have a gem_id
+        score += 10
+        
+    # 4. Penalty for accessibility conflicts (-15)
+    if user_input.get("with_kids") and poi.get("kid_friendly") is False:
+        score -= 15
+    if user_input.get("with_pets") and poi.get("pet_friendly") is False:
+        score -= 15
+    if user_input.get("with_disabilities") and poi.get("wheelchair_accessible") is False:
+        score -= 15
+        
+    return score
+
 # -----------------------------------------------------------------------------
 # NOTE: This function assumes that:
 # 1. The `location` parameter passed in is a city name (e.g., "Bengaluru").
@@ -332,52 +361,55 @@ def fetch_hidden_gems_from_firebase(location, user_interests):
         traceback.print_exc()
         return []
 
-def generate_itinerary(filtered_pois, start_date, end_date, enable_hidden_gems=False, max_per_day=2, location=None, user_interests=None):
+# 🔽 REPLACE your old generate_itinerary function with this new one 🔽
+def generate_itinerary(filtered_pois, start_date, end_date, user_input, enable_hidden_gems=False, max_per_day=5):
     """
-    Generate a scalable itinerary without attaching fixed dates.
-    Distributes POIs across available days and includes disclaimers + photos.
-    ``max_per_day`` controls how many POIs can be assigned to a single day.
+    Generates an itinerary by scoring POIs against user preferences
+    and then scheduling the highest-scoring ones.
     """
     start = dateutil.parser.isoparse(start_date)
     end = dateutil.parser.isoparse(end_date)
     num_days = (end - start).days + 1
 
-    # ✅ Fetch hidden gems first to know how many we have
+    # Fetch hidden gems
     hidden_gems = []
-    if enable_hidden_gems and location and user_interests:
-        hidden_gems = fetch_hidden_gems_from_firebase(location, user_interests)
+    if enable_hidden_gems and user_input.get("location") and user_input.get("selected_interests"):
+        hidden_gems = fetch_hidden_gems_from_firebase(
+            user_input["location"], user_input["selected_interests"]
+        )
         print(f"🎯 Found {len(hidden_gems)} hidden gems to integrate")
 
-    # ✅ Adjust max_per_day to accommodate hidden gems
-    regular_poi_limit = max_per_day
-    effective_max_per_day = max_per_day
-    
-    if hidden_gems:
-        # Reserve space for hidden gems by keeping regular POI limit at original value
-        # but increase total capacity
-        effective_max_per_day = max_per_day + 1
-        print(f"📈 Increased daily POI limit from {max_per_day} to {effective_max_per_day} to accommodate hidden gems")
-        print(f"🎯 Regular POIs will use {regular_poi_limit} slots, hidden gems will use the extra slot")
-    else:
-        regular_poi_limit = max_per_day
+    # --- NEW: Scoring and Sorting Logic ---
+    all_activities = hidden_gems + filtered_pois
 
-    # ✅ Instead of dates, we use day indices (Day 1, Day 2...)
+    # 1. Calculate a match score for every potential activity
+    for activity in all_activities:
+        activity["match_score"] = calculate_poi_score(activity, user_input)
+
+    # 2. Sort all activities by their score in descending order
+    all_activities.sort(key=lambda x: x.get("match_score", 0), reverse=True)
+
+    print(f"🏆 Top 5 recommended activities based on score:")
+    for act in all_activities[:5]:
+        print(f"  - {act['name']} (Score: {act.get('match_score', 0):.2f})")
+
+    # --- The rest of the scheduling logic now operates on the sorted list ---
     itinerary = {f"Day {i+1}": [] for i in range(num_days)}
     current_day_idx = 0
     current_day_count = 0
     day_keys = list(itinerary.keys())
 
-    for poi in filtered_pois:
+    # This loop now naturally processes the best-matched POIs first
+    for poi in all_activities:
         if current_day_idx >= len(day_keys):
             break
-        # Move to next day if the current one is filled (use regular_poi_limit to reserve space for hidden gems)
-        if current_day_count >= regular_poi_limit:
+
+        if current_day_count >= max_per_day:
             current_day_idx += 1
             current_day_count = 0
             if current_day_idx >= len(day_keys):
                 break
 
-        # ✅ Determine best time to visit
         best_time = poi.get("best_time") or "Anytime"
         if best_time == "Anytime":
             for tag in poi.get("tags", []):
@@ -392,68 +424,14 @@ def generate_itinerary(filtered_pois, start_date, end_date, enable_hidden_gems=F
             "budget_category": poi.get("budget_category", "unknown"),
             "disclaimer": poi.get("disclaimer", ""),
             "photo_url": poi.get("photo_url", ""),
-            "coordinates": poi.get("coordinates", {})  # ✅ For future route optimization
+            "coordinates": poi.get("coordinates", {}),
+            "match_score": poi.get("match_score", 0) # Include score in final output
         }
 
         itinerary[day_keys[current_day_idx]].append(activity)
         current_day_count += 1
 
-    # ✅ Add Hidden Gems from Firebase
-    if hidden_gems:
-        print(f"🌟 Integrating {len(hidden_gems)} hidden gems into itinerary...")
-        print(f"📊 Current itinerary state before adding gems:")
-        for day_key in day_keys:
-            print(f"   {day_key}: {len(itinerary[day_key])} activities (max allowed: {effective_max_per_day})")
-        
-        # Add hidden gems to days that have space
-        gem_index = 0
-        for day_key in day_keys:
-            if gem_index >= len(hidden_gems):
-                break
-                
-            # Add hidden gem if day has space (less than effective_max_per_day)
-            current_activities = len(itinerary[day_key])
-            print(f"   🔍 Checking {day_key}: {current_activities} activities, limit: {effective_max_per_day}")
-            
-            if current_activities < effective_max_per_day:
-                gem = hidden_gems[gem_index]
-                print(f"   ✨ Adding '{gem['name']}' to {day_key}")
-                itinerary[day_key].append(gem)
-                gem_index += 1
-            else:
-                print(f"   ❌ {day_key} is full ({current_activities}/{effective_max_per_day})")
-                
-        # If we still have unassigned gems, try to add them to days with the least activities
-        remaining_gems = hidden_gems[gem_index:]
-        if remaining_gems:
-            print(f"   🔄 Adding {len(remaining_gems)} remaining gems to least busy days...")
-            # Sort days by number of activities (ascending)
-            sorted_days = sorted(day_keys, key=lambda d: len(itinerary[d]))
-            print(f"   📊 Day activity counts: {[(d, len(itinerary[d])) for d in sorted_days]}")
-            
-            for gem in remaining_gems:
-                for day_key in sorted_days:
-                    if len(itinerary[day_key]) < effective_max_per_day:
-                        print(f"   ✨ Adding overflow gem '{gem['name']}' to {day_key}")
-                        itinerary[day_key].append(gem)
-                        break
-                else:
-                    print(f"   ❌ Could not find space for gem '{gem['name']}' - all days are full!")
-    else:
-        # Fallback: Add placeholder if no hidden gems found
-        if enable_hidden_gems:
-            for day in reversed(day_keys):
-                if len(itinerary[day]) < effective_max_per_day:
-                    itinerary[day].append({
-                        "name": "🔍 Hidden Gem (Coming Soon)",
-                        "tags": ["surprise", "offbeat"],
-                        "best_time": "Anytime",
-                        "disclaimer": "⏳ No hidden gems found for your interests in this location. Feature expanding!"
-                    })
-                    break
-
     return itinerary
-
 # ✅ Test functions - only run when file is executed directly
 if __name__ == "__main__":
     print("🚀 Running Firebase tests...")

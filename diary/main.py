@@ -1,14 +1,20 @@
 from flask import Flask, send_from_directory, jsonify
-from diary.routes.proximity_routes import proximity_bp
-from diary.routes.community_post_routes import community_post_bp
-from diary.routes.progress_routes import progress_bp
-from diary.routes.user_itinerary_routes import diary_bp, user_itinerary_bp
+from diary.routes.proximity_routes import create_proximity_bp
+from diary.routes.community_post_routes import create_community_post_bp # This one was already a direct blueprint
+from diary.routes.progress_routes import create_progress_bp
+from diary.routes.diary_routes import create_diary_bp
+from diary.routes.user_itinerary_routes import  create_user_itinerary_bp
 import os
 import json
-
+from diary.firebase.firebase_config import db
 
 def create_app():
     app = Flask(__name__)
+    proximity_bp=create_proximity_bp(db)
+    progress_bp=create_progress_bp(db)
+    diary_bp=create_diary_bp(db)
+    community_post_bp=create_community_post_bp(db)
+    user_itinerary_bp=create_user_itinerary_bp(db)
 
     # ✅ Register Blueprints
     app.register_blueprint(proximity_bp)

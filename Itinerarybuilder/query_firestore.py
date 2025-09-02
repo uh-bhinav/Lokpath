@@ -2,7 +2,7 @@
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from .utils.firebase_utils import get_service_account_path
+from utils.firebase_utils import get_service_account_path
 
 # ✅ Initialize Firestore once
 if not firebase_admin._apps:
@@ -48,9 +48,9 @@ def get_filtered_pois(user_input):
             continue
 
         # ✅ Tag-based filtering (intersection with user interests)
-        poi_tags = set(data["tags"])
-        if user_tags and not poi_tags.intersection(user_tags):
-            continue
+        # poi_tags = set(data["tags"])
+        # if user_tags and not poi_tags.intersection(user_tags):
+        #     continue
 
         # ✅ Accessibility disclaimers (do NOT reject, only mark warnings)
         disclaimer = []

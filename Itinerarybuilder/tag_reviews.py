@@ -30,6 +30,21 @@ _KID_UNFRIENDLY_PHRASES = [
 ]
 
 
+# 🔽 ADD THIS NEW HELPER FUNCTION 🔽
+def infer_intensity_from_tags(tags):
+    """Infers an intensity level from a list of POI tags."""
+    high_intensity_tags = {"adventurous", "trek"}
+    low_intensity_tags = {"relaxing", "peaceful", "quiet", "spiritual"}
+
+    tag_set = set(tags)
+
+    if not high_intensity_tags.isdisjoint(tag_set):
+        return "high"
+    if not low_intensity_tags.isdisjoint(tag_set):
+        return "low"
+
+    return "medium" # Default intensity
+
 def has_kid_friendly_issues(reviews):
     """Return ``True`` if any review suggests kids may not be welcome."""
     for review in reviews or []:
@@ -76,8 +91,13 @@ def tag_place_with_reviews(place_name, reviews, min_confidence=0.6, min_occurren
     sorted_tags = sorted(filtered_tags.items(), key=lambda x: x[1], reverse=True)
     final_tags = [tag for tag, _ in sorted_tags]
 
-    return final_tags
+    # 🔽 MODIFIED: Instead of just returning tags, infer intensity and return both 🔽
+    intensity = infer_intensity_from_tags(final_tags)
 
+    return {
+        "tags": final_tags,
+        "intensity": intensity
+    }
 
 #Cache tags in Firestore.
 

@@ -2,7 +2,7 @@
 
 import firebase_admin
 from firebase_admin import credentials, firestore
-from .utils.firebase_utils import get_service_account_path
+from utils.firebase_utils import get_service_account_path
 from google.api_core.exceptions import GoogleAPIError
 import datetime
 
@@ -49,6 +49,8 @@ def store_pois(location, pois, batch_size=300):
             poi.setdefault("kid_friendly", None)
             poi.setdefault("pet_friendly", None)
             poi.setdefault("wheelchair_accessible", None)
+            poi.setdefault("intensity", "medium")
+            poi.setdefault("estimated_visit_duration", 1.5) # Safety net default
 
             # ✅ Add metadata
             poi["created_at"] = datetime.datetime.utcnow().isoformat()
