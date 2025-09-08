@@ -1,0 +1,15 @@
+# In .dockerignore
+
+# Ignore Python's virtual environment
+venv/
+flask-env/
+
+# Ignore Python's bytecode files
+__pycache__/
+*.pyc
+
+# Ignore Git directory
+.git/
+
+# Ignore local environment file (we will pass this in securely)
+.env

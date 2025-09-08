@@ -8,7 +8,7 @@ from geopy.distance import geodesic # Keep this for distance calculations
 from werkzeug.utils import secure_filename 
 
 # --- Global Variables ---
-session_store = {}
+
 
 # --- Geocoding API Client (read key from env) ---
 Maps_API_KEY = os.environ.get('Maps_API_KEY')

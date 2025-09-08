@@ -19,7 +19,6 @@ from Itinerarybuilder.store_firestore import store_itinerary
 from Itinerarybuilder.store_pois import store_pois
 from Itinerarybuilder.utils.itinerary_utils import estimate_required_pois, infer_kid_friendly
 from Itinerarybuilder.utils.place_info import map_price_level
-from shared_globals import session_store # Ensure session_store is imported if needed elsewhere
 from Itinerarybuilder.fetch_places import search_places_autocomplete, get_place_details
 from utils.place_info import load_google_api_key
 
@@ -673,14 +672,40 @@ def create_itinerary_bp(db_instance): # Function to create and return the bluepr
     @login_required_user
     def get_place_details_by_id(place_id):
         """
-        Gets the full, normalized details for a place selected from autocomplete.
+        Gets the full, normalized details for a place.
+        Implements a "cache-first" strategy using the nested '/places/{location}/poi_list' collection.
         """
+        # 1. Get the required 'location' from the URL's query parameter
+        location = request.args.get('location')
+        if not location:
+            return jsonify({"error": "A 'location' query parameter is required."}), 400
+        
+        # Sanitize the location name for use as a document ID (e.g., lowercase)
+        location_id = location.lower()
+
         try:
+            # 2. Build the path to the document in your existing Firestore structure
+            cache_ref = db_instance.collection('places').document(location_id) \
+                .collection('poi_list').document(place_id)
+
+            # 3. Check your database first (the cache)
+            cached_doc = cache_ref.get()
+            if cached_doc.exists:
+                current_app.logger.info(f"CACHE HIT for place_id: {place_id} in location: {location_id}")
+                return jsonify(cached_doc.to_dict()), 200
+
+            # 4. If not in your cache, call the Google API (Cache Miss)
+            current_app.logger.info(f"CACHE MISS for place_id: {place_id}. Fetching from Google.")
             api_key = load_google_api_key()
             details = get_place_details(place_id, api_key)
+
+            # 5. Save the new details back to your cache for next time
+            cache_ref.set(details)
+            
             return jsonify(details), 200
+
         except Exception as e:
             current_app.logger.error(f"Place details failed for {place_id}: {e}")
             return jsonify({"error": "Failed to fetch place details."}), 500
-        
+    
     return itinerary_bp

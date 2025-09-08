@@ -6,7 +6,7 @@ from user_auth.utils import login_required_user
 load_dotenv()
 from flask import Flask, request, jsonify, session, current_app
 from flask import send_from_directory
-from shared_globals import session_store, allowed_file, reverse_geocode, extract_simplified_region, extract_state_city_from_google
+from shared_globals import allowed_file, reverse_geocode, extract_simplified_region, extract_state_city_from_google
 from werkzeug.utils import secure_filename
 from collections import Counter
 from utils.exif_utils import extract_gps
@@ -18,6 +18,8 @@ from firebase_admin import credentials, firestore, auth
 from utils.tags_extractor import extract_tags
 from utils.moderation import is_description_safe 
 import logging 
+from utils.storage_utils import upload_to_gcs
+import tempfile # Needed for temporary file handling
 
 
 """cred = credentials.Certificate("/Users/abhinavgurkar/Lokpath_list_a_place/credentials/lokpath-2d9a0-firebase-adminsdk-fbsvc-11808bd26d.json")
@@ -25,19 +27,25 @@ firebase_admin.initialize_app(cred)
 db = firestore.client()"""
 
 FIREBASE_SERVICE_ACCOUNT_CONTENT = os.environ.get('FIREBASE_SERVICE_ACCOUNT_CONTENT')
-FIREBASE_SERVICE_ACCOUNT_PATH = "credentials/lokpath-2d9a0-firebase-adminsdk-fbsvc-cd5812102d.json"
+
+FIREBASE_SERVICE_ACCOUNT_PATH = os.environ.get('FIREBASE_SERVICE_ACCOUNT_PATH')
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def _initialize_firebase():
     if not firebase_admin._apps: # Check if Firebase app is not already initialized
+        bucket_name = 'lokpath-2d9a0.firebasestorage.app'
         if FIREBASE_SERVICE_ACCOUNT_CONTENT:
             import json
             cred = credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_CONTENT))
-            firebase_admin.initialize_app(cred)
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': bucket_name
+            })
             logging.info("Firebase initialized using environment variable.")
         elif os.path.exists(FIREBASE_SERVICE_ACCOUNT_PATH):
             cred = credentials.Certificate(FIREBASE_SERVICE_ACCOUNT_PATH)
-            firebase_admin.initialize_app(cred)
+            firebase_admin.initialize_app(cred, {
+                'storageBucket': bucket_name
+            })
             logging.info("Firebase initialized using local file path.")
         else:
             logging.error( # MODIFIED: Use standard logging
@@ -128,18 +136,20 @@ def save_manual_location():
     if not session_id or not latitude or not longitude:
         return jsonify({"error": "Missing session_id or coordinates"}), 400
 
-    session_store[session_id] = {
+    session_ref = db.collection('submission_sessions').document(session_id)
+    session_ref.update({
         "gps_fallback": True,
         "manual_location": {"latitude": latitude, "longitude": longitude}
-    }
+    })
 
     return jsonify({"message": "Manual location saved", "session_id": session_id}), 200
 
 @app.route('/session/<session_id>', methods=['GET'])
 def get_session_data(session_id):
-    data = session_store.get(session_id)
-    if data:
-        return jsonify(data), 200
+    session_ref = db.collection('submission_sessions').document(session_id)
+    doc = session_ref.get()
+    if doc.exists:
+        return jsonify(doc.to_dict()), 200
     else:
         return jsonify({"error": "Session not found"}), 404
 
@@ -158,7 +168,8 @@ def submit_details():
     if not session_id or not description or not context or not budget:
         return jsonify({"error": "Missing session_id, description, context or budget"}), 400
 
-    if session_id not in session_store:
+    session_ref = db.collection('submission_sessions').document(session_id)
+    if not session_ref.get().exists:
         return jsonify({"error": "Session ID not found"}), 404
     
     is_safe, reason = is_description_safe(description)
@@ -170,17 +181,18 @@ def submit_details():
 
     tags = extract_tags(description)
 
-    session_store[session_id].update({
-        "description": description,
+    update_data = {
+        "description": data.get('description'),
         "tags": tags,
-        "context": context,
-        "budget": budget,
-        "kid_friendly": kid_friendly,
-        "pet_friendly": pet_friendly,
-        "wheelchair_accessible": wheelchair_accessible,
-        "best_time": best_time,
+        "context": data.get('context'),
+        "budget": data.get('budget'),
+        "kid_friendly": data.get('kid_friendly'),
+        "pet_friendly": data.get('pet_friendly'),
+        "wheelchair_accessible": data.get('wheelchair_accessible'),
+        "best_time": data.get('best_time'),
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
-    })
+    }
+    session_ref.update(update_data)
 
     """session_store[session_id]['description'] = description
     session_store[session_id]['context'] = context
@@ -222,26 +234,44 @@ def upload_images():
 
     gps_list = []
     session_id = str(uuid.uuid4())
-    session_store[session_id] = {"image_filenames": [], "upload_type": upload_type}
+    image_urls_list = []
 
     for file in images:
         if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(TARGET_FOLDER, filename)
-            file.save(filepath)
-            session_store[session_id]["image_filenames"].append(os.path.join(upload_type, filename))
-
-            gps = extract_gps(filepath)
+            temp_file = tempfile.NamedTemporaryFile(delete=False)
+            file.save(temp_file.name)
+            gps = extract_gps(temp_file.name)
             if gps:
                 gps_list.append(gps)
+
+            file.seek(0)
+
+            try:
+                public_url = upload_to_gcs(file, upload_type)
+                image_urls_list.append(public_url)
+            except Exception as e:
+                current_app.logger.error(f"Failed to upload {file.filename} to GCS: {e}")
+                return jsonify({"error": "Failed to upload one or more images."}), 500
+            finally:
+                # 3. Clean up and delete the temporary file
+                temp_file.close()
+                os.remove(temp_file.name)
         else:
             return jsonify({"error": f"Invalid file: {file.filename}"}), 400
+        
+    session_data = {
+        "image_urls": image_urls_list,
+        "upload_type": upload_type,
+        "created_at": firestore.SERVER_TIMESTAMP,
+        "gps_found_in_images": len(gps_list),
+    }
 
     if not gps_list:
-        session_store[session_id].update({
+        session_data.update({
             "gps_fallback": True,
             "reason": "no_gps_found",
         })
+        db.collection('submission_sessions').document(session_id).set(session_data)
         current_app.logger.info(f"Session {session_id}: Images uploaded to {upload_type}, no GPS found. Prompting manual location.")
         return jsonify({
             "message": "Images uploaded but no GPS found",
@@ -261,12 +291,13 @@ def upload_images():
                 break
 
     if too_far:
-        session_store[session_id].update({
+        session_data.update({
             "gps_fallback": True,
             "reason": "gps_variation",
             "gps_points": gps_list,
         })
-        current_app.logger.info(f"Session {session_id}: GPS coordinates vary significantly. Prompting manual location.")
+        # MODIFIED: Write to Firestore before returning
+        db.collection('submission_sessions').document(session_id).set(session_data)
         return jsonify({
             "message": "Images are from very different locations",
             "action": "Prompt user to choose location manually",
@@ -284,7 +315,7 @@ def upload_images():
     if not google_address_components:
         # Fallback to Nominatim if Google fails
         nominatim_address = reverse_geocode_nominatim_fallback(most_common_lat, most_common_lon)
-        session_store[session_id].update({
+        session_data.update({
             "gps_fallback": False,
             "suggested_location": {
                 "latitude": most_common_lat,
@@ -293,6 +324,7 @@ def upload_images():
             },
             "gps_found_in_images": len(gps_list),
         })
+        db.collection('submission_sessions').document(session_id).set(session_data)
         return jsonify({
             "message": "Images uploaded successfully (using Nominatim fallback)",
             "session_id": session_id,
@@ -302,7 +334,7 @@ def upload_images():
 
     state, city = extract_state_city_from_google(google_address_components)
 
-    session_store[session_id].update({
+    session_data.update({
         "gps_fallback": False,
         "suggested_location": {
             "latitude": most_common_lat,
@@ -311,8 +343,10 @@ def upload_images():
             "state": state,
             "city": city
         },
-        "gps_found_in_images": len(gps_list),
     })
+
+    db.collection('submission_sessions').document(session_id).set(session_data)
+
     current_app.logger.info(f"Session {session_id}: Images uploaded to {upload_type}, GPS extracted. Suggested location: {city}, {state}")
     return jsonify({
         "message": "Images uploaded successfully",
@@ -330,13 +364,15 @@ def upload_images():
 
 @app.route('/finalize/<session_id>', methods=['GET'])
 def finalize_json(session_id):
-    data = session_store.get(session_id)
-    if not data:
+    session_ref = db.collection('submission_sessions').document(session_id)
+    doc = session_ref.get()
+    if not doc.exists:
         return jsonify({"error": "Session not found"}), 404
+    data = doc.to_dict()
 
     coords = data.get("suggested_location") or data.get("manual_location") or {}
-    image_filenames = data.get("image_filenames", [])
-    preview_image_urls = [f"/uploads/{f}" for f in image_filenames]
+    preview_image_urls = data.get("image_urls", [])
+    
 
     return jsonify({
         "description": data.get("description"),
@@ -362,18 +398,17 @@ def finalize_json(session_id):
 @app.route('/upload-to-firebase/<session_id>', methods=['POST'])
 @login_required_user 
 def upload_to_firebase(session_id):
-    data = session_store.get(session_id)
-    if not data:
+    session_ref = db.collection('submission_sessions').document(session_id)
+    doc = session_ref.get()
+    if not doc.exists:
         return jsonify({"error": "Session not found"}), 404
+    data = doc.to_dict()
 
     description = data.get("description")
     tags = data.get("tags", [])
     budget = data.get("budget")
     context = data.get("context", {})
-    image_paths_for_firestore = []
-    for filename in data.get("image_filenames", []): 
-        image_paths_for_firestore.append(f"/uploads/{filename}")
-
+    image_paths_for_firestore = data.get("image_urls", [])
     user_uid = session.get('user_uid')
     added_by_uid_field = user_uid if user_uid else "anonymous" 
 
@@ -425,7 +460,7 @@ def upload_to_firebase(session_id):
     push_to_firestore(state_name_for_firestore, city_name_for_firestore, session_id, final_data)
 
     try:
-        if user_uid:
+        if session.get('user_uid'):
             user_profile_ref = db.collection('users').document(user_uid)
             user_doc = user_profile_ref.get() # <--- CHECK IF USER DOC EXISTS
             
@@ -450,7 +485,7 @@ def upload_to_firebase(session_id):
             current_app.logger.info(f"Incremented submitted_gems_count for user {user_uid}.")
 
         # Clean up session store after successful finalization
-        del session_store[session_id]
+        session_ref.delete()
         current_app.logger.info(f"Session {session_id} data finalized and removed from session_store.")
 
         return jsonify({"message": "Data uploaded to Firebase successfully!", "gem_id": session_id}), 201 
