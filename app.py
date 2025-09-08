@@ -238,15 +238,17 @@ def upload_images():
 
     for file in images:
         if file and allowed_file(file.filename):
+            # 1. Save to a temporary file to extract GPS
             temp_file = tempfile.NamedTemporaryFile(delete=False)
             file.save(temp_file.name)
             gps = extract_gps(temp_file.name)
             if gps:
                 gps_list.append(gps)
-
+            
+            # 2. Rewind the file and upload to GCS using your helper
             file.seek(0)
-
             try:
+                # This now uploads to the cloud instead of saving locally
                 public_url = upload_to_gcs(file, upload_type)
                 image_urls_list.append(public_url)
             except Exception as e:
@@ -258,7 +260,7 @@ def upload_images():
                 os.remove(temp_file.name)
         else:
             return jsonify({"error": f"Invalid file: {file.filename}"}), 400
-        
+    
     session_data = {
         "image_urls": image_urls_list,
         "upload_type": upload_type,

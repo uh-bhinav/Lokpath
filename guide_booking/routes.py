@@ -434,22 +434,23 @@ def create_guide_booking_bp(db_instance):
             # For very high volume reviews, this recalculation might be better done by a
             # Firebase Cloud Function triggered by new reviews, to avoid race conditions and
             # blocking the API response. But for now, direct recalculation is fine.
-            all_reviews_docs = db_instance.collection('guides').document(guide_id).collection('reviews').stream()
-            total_rating = 0
-            num_reviews = 0
-            for doc in all_reviews_docs:
-                review = doc.to_dict()
-                total_rating += review.get('rating', 0)
-                num_reviews += 1
+            # all_reviews_docs = db_instance.collection('guides').document(guide_id).collection('reviews').stream()
+            # total_rating = 0
+            # num_reviews = 0
+            # for doc in all_reviews_docs:
+            #     review = doc.to_dict()
+            #     total_rating += review.get('rating', 0)
+            #     num_reviews += 1
 
-            new_average_rating = round(total_rating / num_reviews, 1) if num_reviews > 0 else 0.0
+            # new_average_rating = round(total_rating / num_reviews, 1) if num_reviews > 0 else 0.0
 
-            # Update the guide's main document
-            guide_ref.update({
-                "average_rating": new_average_rating,
-                "total_reviews": num_reviews # Add this field to your guide data structure
-            })
-            current_app.logger.info(f"Guide {guide_id} average rating updated to {new_average_rating} based on {num_reviews} reviews.")
+            # # Update the guide's main document
+            # guide_ref.update({
+            #     "average_rating": new_average_rating,
+            #     "total_reviews": num_reviews # Add this field to your guide data structure
+            # })
+            # current_app.logger.info(f"Guide {guide_id} average rating updated to {new_average_rating} based on {num_reviews} reviews.")
+            current_app.logger.info(f"Review {review_id} saved. Rating will be updated by a Cloud Function.")
 
 
             return jsonify({"message": "Review submitted successfully!", "review_id": review_id}), 201
