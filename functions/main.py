@@ -1,8 +1,9 @@
 # functions/main.py
 
 import os
+import datetime
 import tempfile
-from firebase_functions import storage_fn
+from firebase_functions import firestore_fn, storage_fn, scheduler_fn
 from firebase_admin import initialize_app, storage, firestore
 from PIL import Image
 import pillow_heif
@@ -180,3 +181,145 @@ def update_guide_rating(event: firestore_fn.Event[firestore_fn.Change]) -> None:
     })
 
     print(f"Guide rating updated for {guide_id}. New Average: {new_average_rating}, Total Reviews: {num_reviews}")
+
+
+@firestore_fn.on_document_created("bookings/{bookingId}")
+def assign_guide_to_booking(event: firestore_fn.Event[firestore_fn.Change]) -> None:
+    """
+    Triggered when a new booking document is created.
+    Assigns the first guide in the potential_guides list to the booking.
+    """
+    booking_ref = event.reference
+    booking_data = event.data.to_dict()
+
+    # Only act on bookings that are newly created and need assignment
+    if booking_data.get("status") != "pending_assignment":
+        print(f"Booking {booking_ref.id} is not pending assignment. Skipping.")
+        return
+
+    potential_guides = booking_data.get("potential_guides", [])
+    if not potential_guides:
+        print(f"Booking {booking_ref.id} has no potential guides. Marking as failed.")
+        booking_ref.update({"status": "failed", "failure_reason": "No guides found"})
+        return
+
+    # Assign the first guide from the list
+    assigned_guide_uid = potential_guides[0]
+    
+    # Set the response deadline to 60 minutes from now
+    assignment_time = datetime.datetime.now(datetime.timezone.utc)
+    deadline = assignment_time + datetime.timedelta(minutes=60)
+
+    # Update the booking document
+    booking_ref.update({
+        "status": "pending_acceptance",
+        "assigned_guide_uid": assigned_guide_uid,
+        "guide_response_deadline": deadline.isoformat(),
+        "assignment_history": firestore.ArrayUnion([{
+            "guide_uid": assigned_guide_uid,
+            "assigned_at": assignment_time.isoformat(),
+            "status": "pending"
+        }])
+    })
+
+    print(f"Assigned guide {assigned_guide_uid} to booking {booking_ref.id}. Deadline: {deadline.isoformat()}")
+
+    # --- TODO: Send a real push notification to the guide ---
+    # For now, this is simulated with a log message.
+    print(f"NOTIFICATION: Sent to guide {assigned_guide_uid} about new booking {booking_ref.id}.")
+
+@firestore_fn.on_document_updated("bookings/{bookingId}")
+def handle_booking_rejection(event: firestore_fn.Event[firestore_fn.Change]) -> None:
+    """
+    Triggered when a booking is updated. If a guide rejected the booking,
+    this function assigns the next guide in the list.
+    """
+    before_data = event.data.before.to_dict()
+    after_data = event.data.after.to_dict()
+    booking_ref = event.reference
+
+    # We only care about the transition to "rejected_by_guide"
+    if not (before_data.get("status") == "pending_acceptance" and after_data.get("status") == "rejected_by_guide"):
+        return
+
+    print(f"Handling rejection for booking {booking_ref.id} by guide {before_data.get('assigned_guide_uid')}")
+
+    potential_guides = after_data.get("potential_guides", [])
+    rejected_guide_uid = before_data.get("assigned_guide_uid")
+
+    try:
+        # Find the index of the guide who just rejected the offer
+        rejected_index = potential_guides.index(rejected_guide_uid)
+    except ValueError:
+        print(f"Error: Rejected guide {rejected_guide_uid} not found in potential_guides list for booking {booking_ref.id}.")
+        booking_ref.update({"status": "failed", "failure_reason": "Internal error: guide list mismatch."})
+        return
+
+    # Try to find the next guide in the list
+    next_guide_index = rejected_index + 1
+    if next_guide_index < len(potential_guides):
+        # There is another guide to try
+        next_guide_uid = potential_guides[next_guide_index]
+        assignment_time = datetime.datetime.now(datetime.timezone.utc)
+        deadline = assignment_time + datetime.timedelta(minutes=60)
+
+        booking_ref.update({
+            "status": "pending_acceptance",
+            "assigned_guide_uid": next_guide_uid,
+            "guide_response_deadline": deadline.isoformat(),
+            "assignment_history": firestore.ArrayUnion([{
+                "guide_uid": next_guide_uid,
+                "assigned_at": assignment_time.isoformat(),
+                "status": "pending"
+            }])
+        })
+        print(f"Re-assigned booking {booking_ref.id} to next guide {next_guide_uid}.")
+        print(f"NOTIFICATION: Sent to guide {next_guide_uid} about new booking {booking_ref.id}.")
+    else:
+        # No more guides left to assign
+        print(f"No more guides to assign for booking {booking_ref.id}. Marking as failed.")
+        booking_ref.update({"status": "failed", "failure_reason": "All available guides rejected the request."})
+        # TODO: Notify the tourist that no guide could be found
+        tourist_uid = after_data.get("tourist_uid")
+        print(f"NOTIFICATION: Sent to tourist {tourist_uid} that no guide could be found for booking {booking_ref.id}.")
+
+
+@scheduler_fn.on_schedule(schedule="every 5 minutes")
+def check_booking_status(event: scheduler_fn.ScheduledEvent) -> None:
+    """
+    Runs every 5 minutes to check for pending bookings that have timed out
+    or need a reminder notification.
+    """
+    db = firestore.client()
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # Query for all bookings that are currently waiting for a guide's response
+    query = db.collection("bookings").where("status", "==", "pending_acceptance")
+    pending_bookings = query.stream()
+
+    for doc in pending_bookings:
+        booking_data = doc.to_dict()
+        deadline_str = booking_data.get("guide_response_deadline")
+        if not deadline_str: continue
+
+        deadline = datetime.datetime.fromisoformat(deadline_str)
+        minutes_left = (deadline - now).total_seconds() / 60
+
+        # 1. Handle Timeouts
+        if minutes_left <= 0:
+            print(f"Booking {doc.id} has timed out. Updating status.")
+            doc.reference.update({"status": "timed_out"})
+            continue # The on_document_updated function will handle re-assignment
+
+        # 2. Handle Reminders
+        reminders = booking_data.get("reminders_sent", {})
+        
+        # 30-minute reminder (window is 25-30 mins left)
+        if 25 < minutes_left <= 30 and not reminders.get("thirty_minute"):
+            doc.reference.update({"reminders_sent.thirty_minute": True})
+            print(f"NOTIFICATION: Sending 30-minute reminder to guide for booking {doc.id}.")
+
+        # 5-minute reminder (window is 1-5 mins left)
+        elif 1 < minutes_left <= 5 and not reminders.get("five_minute"):
+            doc.reference.update({"reminders_sent.five_minute": True})
+            print(f"NOTIFICATION: Sending 5-minute final reminder to guide for booking {doc.id}.")
