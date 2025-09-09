@@ -42,7 +42,8 @@ def _extract_photo_url(place: Dict[str, Any]) -> str:
     """
     Extract a usable photo URL if present.
     """
-    api_key = os.getenv("GOOGLE_MAPS_API_KEY", "YOUR_API_KEY")
+    
+    api_key = os.environ.get("Maps_API_KEY")
     photos = place.get("photos", [])
     if photos:
         ref = photos[0].get("photo_reference")
