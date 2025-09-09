@@ -19,7 +19,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Copy only the installed dependencies from the builder stage
-COPY --from=builder /app/deps /usr/local/lib/python3.10/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy your application code
 COPY . .
