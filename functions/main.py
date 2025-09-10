@@ -4,9 +4,10 @@ import os
 import datetime
 import tempfile
 from firebase_functions import firestore_fn, storage_fn, scheduler_fn
-from firebase_admin import initialize_app, storage, firestore
+from firebase_admin import initialize_app, storage, firestore, messaging
 from PIL import Image
 import pillow_heif
+from google.cloud import vision
 
 # Initialize Firebase Admin SDK
 # This is done once when the function instance starts up.
@@ -135,6 +136,91 @@ def update_firestore_with_thumbnails(original_path: str, thumbnail_urls: dict):
         else:
             print(f"Could not find a submission session for image: {original_path}")
 
+
+@storage_fn.on_object_finalized()
+def moderate_uploaded_image(event: storage_fn.CloudEvent) -> None:
+    """
+    Analyzes uploaded images for NSFW content using the Cloud Vision API
+    and flags them in Firestore if necessary.
+    """
+    bucket_name = event.data.bucket
+    file_path = event.data.name
+    content_type = event.data.content_type
+
+    if not content_type or not content_type.startswith("image/"):
+        print(f"File {file_path} is not an image. Skipping moderation.")
+        return
+    if "thumbnails/" in file_path:
+        print(f"File {file_path} is a thumbnail. Skipping moderation.")
+        return
+
+    gcs_uri = f"gs://{bucket_name}/{file_path}"
+    
+    try:
+        print(f"Analyzing {gcs_uri} for safe search...")
+        response = vision_client.safe_search_detection(image=vision.Image(source=vision.ImageSource(gcs_image_uri=gcs_uri)))
+        safe_search = response.safe_search_annotation
+
+        # Define likelihood levels that we consider unsafe
+        unsafe_levels = (vision.Likelihood.LIKELY, vision.Likelihood.VERY_LIKELY)
+
+        is_unsafe = False
+        reasons = []
+        if safe_search.adult in unsafe_levels:
+            is_unsafe = True
+            reasons.append("ADULT")
+        if safe_search.violence in unsafe_levels:
+            is_unsafe = True
+            reasons.append("VIOLENCE")
+        
+        moderation_status = "REJECTED" if is_unsafe else "APPROVED"
+        
+        print(f"Moderation result for {gcs_uri}: {moderation_status}. Reasons: {reasons if reasons else 'None'}")
+
+        # Update the corresponding Firestore document with the moderation result
+        _update_firestore_with_moderation_status(file_path, moderation_status, reasons)
+
+    except Exception as e:
+        print(f"Error during content moderation for {gcs_uri}: {e}")
+
+def _update_firestore_with_moderation_status(original_path: str, status: str, reasons: list):
+    """
+    Finds the correct Firestore document and updates it with the moderation status.
+    """
+    db = firestore.client()
+    parts = original_path.split('/')
+    
+    # This logic mirrors the thumbnail update function to find the right document
+    upload_type = None
+    if len(parts) > 1 and parts[0] == "uploads": # Structure from app.py
+        upload_type = parts[1]
+
+    doc_ref = None
+    
+    if upload_type == "diary_photos" and len(parts) >= 5:
+        user_id, trip_id, file_name = parts[2], parts[3], parts[4]
+        photo_id = os.path.splitext(file_name)[0]
+        doc_ref = db.collection("users").document(user_id).collection("itineraries").document(trip_id).collection("photos").document(photo_id)
+    
+    elif upload_type in ["gems", "artisans"]:
+        public_url = storage.bucket().blob(original_path).public_url
+        query = db.collection("submission_sessions").where("image_urls", "array_contains", public_url)
+        docs = list(query.stream())
+        if docs:
+            doc_ref = docs[0].reference
+
+    if doc_ref:
+        update_data = {
+            "moderation_status": status,
+            "moderation_reasons": reasons
+        }
+        doc_ref.set(update_data, merge=True)
+        print(f"Updated moderation status for doc: {doc_ref.path}")
+    else:
+        print(f"Could not find a Firestore document to update for image: {original_path}")
+
+
+
 @firestore_fn.on_document_written("guides/{guideId}/reviews/{reviewId}")
 def update_guide_rating(event: firestore_fn.Event[firestore_fn.Change]) -> None:
     """
@@ -185,141 +271,171 @@ def update_guide_rating(event: firestore_fn.Event[firestore_fn.Change]) -> None:
 
 @firestore_fn.on_document_created("bookings/{bookingId}")
 def assign_guide_to_booking(event: firestore_fn.Event[firestore_fn.Change]) -> None:
-    """
-    Triggered when a new booking document is created.
-    Assigns the first guide in the potential_guides list to the booking.
-    """
     booking_ref = event.reference
     booking_data = event.data.to_dict()
-
-    # Only act on bookings that are newly created and need assignment
-    if booking_data.get("status") != "pending_assignment":
-        print(f"Booking {booking_ref.id} is not pending assignment. Skipping.")
-        return
-
+    if booking_data.get("status") != "pending_assignment": return
     potential_guides = booking_data.get("potential_guides", [])
     if not potential_guides:
-        print(f"Booking {booking_ref.id} has no potential guides. Marking as failed.")
-        booking_ref.update({"status": "failed", "failure_reason": "No guides found"})
+        booking_ref.update({"status": "failed", "failure_reason": "No potential guides found"})
         return
-
-    # Assign the first guide from the list
     assigned_guide_uid = potential_guides[0]
-    
-    # Set the response deadline to 60 minutes from now
     assignment_time = datetime.datetime.now(datetime.timezone.utc)
     deadline = assignment_time + datetime.timedelta(minutes=60)
-
-    # Update the booking document
     booking_ref.update({
         "status": "pending_acceptance",
         "assigned_guide_uid": assigned_guide_uid,
         "guide_response_deadline": deadline.isoformat(),
-        "assignment_history": firestore.ArrayUnion([{
-            "guide_uid": assigned_guide_uid,
-            "assigned_at": assignment_time.isoformat(),
-            "status": "pending"
-        }])
+        "reminders_sent": {"thirty_minute": False, "five_minute": False},
+        "assignment_history": firestore.ArrayUnion([{"guide_uid": assigned_guide_uid, "assigned_at": assignment_time.isoformat(), "status": "pending"}])
     })
+    # The print/log statement for notification is now handled by send_booking_notifications
+    print(f"Assigned guide {assigned_guide_uid} to booking {booking_ref.id}.")
 
-    print(f"Assigned guide {assigned_guide_uid} to booking {booking_ref.id}. Deadline: {deadline.isoformat()}")
-
-    # --- TODO: Send a real push notification to the guide ---
-    # For now, this is simulated with a log message.
-    print(f"NOTIFICATION: Sent to guide {assigned_guide_uid} about new booking {booking_ref.id}.")
 
 @firestore_fn.on_document_updated("bookings/{bookingId}")
 def handle_booking_rejection(event: firestore_fn.Event[firestore_fn.Change]) -> None:
-    """
-    Triggered when a booking is updated. If a guide rejected the booking,
-    this function assigns the next guide in the list.
-    """
-    before_data = event.data.before.to_dict()
-    after_data = event.data.after.to_dict()
+    # This function's code remains the same, but no longer needs to print notifications...
+    before_data, after_data = event.data.before.to_dict(), event.data.after.to_dict()
     booking_ref = event.reference
-
-    # We only care about the transition to "rejected_by_guide"
-    if not (before_data.get("status") == "pending_acceptance" and after_data.get("status") == "rejected_by_guide"):
-        return
-
-    print(f"Handling rejection for booking {booking_ref.id} by guide {before_data.get('assigned_guide_uid')}")
-
-    potential_guides = after_data.get("potential_guides", [])
+    is_rejection = before_data.get("status") == "pending_acceptance" and after_data.get("status") == "rejected_by_guide"
+    is_timeout = before_data.get("status") == "pending_acceptance" and after_data.get("status") == "timed_out"
+    if not (is_rejection or is_timeout): return
     rejected_guide_uid = before_data.get("assigned_guide_uid")
-
+    potential_guides = after_data.get("potential_guides", [])
     try:
-        # Find the index of the guide who just rejected the offer
         rejected_index = potential_guides.index(rejected_guide_uid)
     except ValueError:
-        print(f"Error: Rejected guide {rejected_guide_uid} not found in potential_guides list for booking {booking_ref.id}.")
         booking_ref.update({"status": "failed", "failure_reason": "Internal error: guide list mismatch."})
         return
-
-    # Try to find the next guide in the list
     next_guide_index = rejected_index + 1
     if next_guide_index < len(potential_guides):
-        # There is another guide to try
         next_guide_uid = potential_guides[next_guide_index]
         assignment_time = datetime.datetime.now(datetime.timezone.utc)
         deadline = assignment_time + datetime.timedelta(minutes=60)
-
         booking_ref.update({
             "status": "pending_acceptance",
             "assigned_guide_uid": next_guide_uid,
             "guide_response_deadline": deadline.isoformat(),
-            "assignment_history": firestore.ArrayUnion([{
-                "guide_uid": next_guide_uid,
-                "assigned_at": assignment_time.isoformat(),
-                "status": "pending"
-            }])
+            "reminders_sent": {"thirty_minute": False, "five_minute": False},
+            "assignment_history": firestore.ArrayUnion([{"guide_uid": next_guide_uid, "assigned_at": assignment_time.isoformat(), "status": "pending"}])
         })
-        print(f"Re-assigned booking {booking_ref.id} to next guide {next_guide_uid}.")
-        print(f"NOTIFICATION: Sent to guide {next_guide_uid} about new booking {booking_ref.id}.")
     else:
-        # No more guides left to assign
-        print(f"No more guides to assign for booking {booking_ref.id}. Marking as failed.")
-        booking_ref.update({"status": "failed", "failure_reason": "All available guides rejected the request."})
-        # TODO: Notify the tourist that no guide could be found
-        tourist_uid = after_data.get("tourist_uid")
-        print(f"NOTIFICATION: Sent to tourist {tourist_uid} that no guide could be found for booking {booking_ref.id}.")
+        booking_ref.update({"status": "failed", "failure_reason": "All available guides rejected or timed out."})
 
 
 @scheduler_fn.on_schedule(schedule="every 5 minutes")
 def check_booking_status(event: scheduler_fn.ScheduledEvent) -> None:
-    """
-    Runs every 5 minutes to check for pending bookings that have timed out
-    or need a reminder notification.
-    """
+    # This function's code remains the same, but no longer needs to print notifications...
     db = firestore.client()
     now = datetime.datetime.now(datetime.timezone.utc)
-
-    # Query for all bookings that are currently waiting for a guide's response
     query = db.collection("bookings").where("status", "==", "pending_acceptance")
     pending_bookings = query.stream()
-
     for doc in pending_bookings:
         booking_data = doc.to_dict()
         deadline_str = booking_data.get("guide_response_deadline")
         if not deadline_str: continue
-
         deadline = datetime.datetime.fromisoformat(deadline_str)
         minutes_left = (deadline - now).total_seconds() / 60
-
-        # 1. Handle Timeouts
         if minutes_left <= 0:
-            print(f"Booking {doc.id} has timed out. Updating status.")
             doc.reference.update({"status": "timed_out"})
-            continue # The on_document_updated function will handle re-assignment
-
-        # 2. Handle Reminders
+            continue
         reminders = booking_data.get("reminders_sent", {})
-        
-        # 30-minute reminder (window is 25-30 mins left)
         if 25 < minutes_left <= 30 and not reminders.get("thirty_minute"):
             doc.reference.update({"reminders_sent.thirty_minute": True})
-            print(f"NOTIFICATION: Sending 30-minute reminder to guide for booking {doc.id}.")
-
-        # 5-minute reminder (window is 1-5 mins left)
+            # Send actual reminder
+            send_fcm_notification(booking_data.get("assigned_guide_uid"), "Trip Request Reminder", "You have 30 minutes to respond.")
         elif 1 < minutes_left <= 5 and not reminders.get("five_minute"):
             doc.reference.update({"reminders_sent.five_minute": True})
-            print(f"NOTIFICATION: Sending 5-minute final reminder to guide for booking {doc.id}.")
+            # Send actual reminder
+            send_fcm_notification(booking_data.get("assigned_guide_uid"), "Final Trip Reminder", "Your trip request will expire in 5 minutes.")
+
+
+
+def send_fcm_notification(user_id: str, title: str, body: str, data: dict = None):
+    """
+    Fetches a user's FCM tokens from Firestore and sends a push notification.
+    """
+    db = firestore.client()
+    tokens_ref = db.collection("users").document(user_id).collection("device_tokens")
+    tokens_docs = tokens_ref.stream()
+    
+    tokens = [doc.to_dict().get("token") for doc in tokens_docs if doc.to_dict().get("token")]
+
+    if not tokens:
+        print(f"No device tokens found for user {user_id}. Cannot send notification.")
+        return
+
+    message = messaging.MulticastMessage(
+        notification=messaging.Notification(
+            title=title,
+            body=body,
+        ),
+        data=data or {},
+        tokens=tokens,
+    )
+
+    try:
+        response = messaging.send_multicast(message)
+        print(f"Successfully sent {response.success_count} notifications for user {user_id}.")
+        if response.failure_count > 0:
+            # Optional: Add logic here to clean up invalid tokens
+            print(f"Failed to send {response.failure_count} notifications for user {user_id}.")
+    except Exception as e:
+        print(f"Error sending FCM notification to user {user_id}: {e}")
+
+
+# --- [NEW] Centralized Notification Handler Function ---
+@firestore_fn.on_document_updated("bookings/{bookingId}")
+def send_booking_notifications(event: firestore_fn.Event[firestore_fn.Change]) -> None:
+    """
+    Listens for booking status changes and sends relevant push notifications.
+    """
+    before_data = event.data.before.to_dict()
+    after_data = event.data.after.to_dict()
+
+    status_before = before_data.get("status")
+    status_after = after_data.get("status")
+    
+    if status_before == status_after:
+        return # No status change, no notification needed
+
+    tourist_uid = after_data.get("tourist_uid")
+    guide_uid = after_data.get("assigned_guide_uid")
+    booking_id = event.params.get("bookingId")
+    data_payload = {"booking_id": booking_id, "click_action": "FLUTTER_NOTIFICATION_CLICK"}
+
+    # Case 1: New guide assignment (or re-assignment)
+    if status_after == "pending_acceptance" and guide_uid:
+        send_fcm_notification(
+            user_id=guide_uid,
+            title="New Trip Request!",
+            body="A new trip is available. Respond within 60 minutes to accept.",
+            data=data_payload
+        )
+
+    # Case 2: Booking was accepted by a guide
+    elif status_after == "accepted" and tourist_uid:
+        send_fcm_notification(
+            user_id=tourist_uid,
+            title="Your Guide is Confirmed!",
+            body=f"Your booking {booking_id} has been accepted.",
+            data=data_payload
+        )
+
+    # Case 3: Booking failed (no guides available)
+    elif status_after == "failed" and tourist_uid:
+        send_fcm_notification(
+            user_id=tourist_uid,
+            title="Could Not Find a Guide",
+            body=f"We're sorry, we couldn't find an available guide for your trip.",
+            data=data_payload
+        )
+    
+    # Case 4: Booking was cancelled by the tourist
+    elif status_after == "cancelled_by_tourist" and guide_uid:
+         send_fcm_notification(
+            user_id=guide_uid,
+            title="Booking Cancelled",
+            body=f"The booking {booking_id} was cancelled by the tourist.",
+            data=data_payload
+        )
