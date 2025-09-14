@@ -1,22 +1,10 @@
 
 # tag_reviews.py
-
-from transformers import pipeline
 from tqdm import tqdm
 import time
-
-# Load once globally
-classifier = pipeline(
-    "zero-shot-classification",
-    model="facebook/bart-large-mnli",
-    device=-1  # ✅ CPU now, switch to device=0 when moving to GPU
-)
-
-LABELS = [
-    "romantic", "adventurous", "family-friendly", "spiritual", "sunset",
-    "nature", "photogenic", "historical", "cultural", "peaceful", "crowded",
-    "quiet", "trek", "local food", "viewpoint"
-]
+import requests
+import os
+import json
 
 # Simple phrases indicating that a place may not welcome kids.  This is
 # intentionally basic to avoid heavy NLP dependencies.
@@ -54,50 +42,33 @@ def has_kid_friendly_issues(reviews):
                 return True
     return False
 
-def tag_place_with_reviews(place_name, reviews, min_confidence=0.6, min_occurrences=2):
+def tag_place_with_reviews(place_name, reviews):
     """
-    Assigns tags to a POI using BERT zero-shot classification.
-    Aggregates across reviews with a confidence and occurrence threshold.
+    Calls the dedicated Cloud Function to tag a place based on reviews.
+    This keeps the main Flask app lightweight.
     """
-    if not reviews:
-        print(f"⚠️ No reviews available for {place_name}, skipping tagging.")
-        return []
+    # Get the URL of your deployed Cloud Function from an environment variable
+    function_url = os.environ.get('TAG_REVIEWS_FUNCTION_URL')
 
-    tag_scores = {}
-    tag_count = {}
+    if not function_url:
+        print("ERROR: TAG_REVIEWS_FUNCTION_URL environment variable not set.")
+        return {"tags": ["tagging_service_unavailable"], "intensity": "unknown"}
 
-    for review in tqdm(reviews, desc=f"Tagging {place_name}", leave=False):
-        review = review.strip()
-        if not review:
-            continue
+    try:
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "place_name": place_name,
+            "reviews": reviews
+        }
+        
+        response = requests.post(function_url, data=json.dumps(payload), headers=headers, timeout=20) # Longer timeout for AI
+        response.raise_for_status()
+        
+        return response.json()
 
-        # Run classification
-        result = classifier(review, LABELS, multi_label=True)
-
-        # Aggregate scores
-        for label, score in zip(result["labels"], result["scores"]):
-            if score >= min_confidence:
-                tag_scores[label] = tag_scores.get(label, 0) + score
-                tag_count[label] = tag_count.get(label, 0) + 1
-
-        time.sleep(0.05)  # Small delay for rate-limiting safety in large batches
-
-    # Apply minimum occurrence filter
-    filtered_tags = {
-        tag: score for tag, score in tag_scores.items()
-        if tag_count.get(tag, 0) >= min_occurrences
-    }
-
-    sorted_tags = sorted(filtered_tags.items(), key=lambda x: x[1], reverse=True)
-    final_tags = [tag for tag, _ in sorted_tags]
-
-    # 🔽 MODIFIED: Instead of just returning tags, infer intensity and return both 🔽
-    intensity = infer_intensity_from_tags(final_tags)
-
-    return {
-        "tags": final_tags,
-        "intensity": intensity
-    }
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: Could not call the tag_place_with_reviews Cloud Function: {e}")
+        return {"tags": ["tagging_service_error"], "intensity": "unknown"}
 
 #Cache tags in Firestore.
 

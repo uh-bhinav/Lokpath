@@ -5,3 +5,6 @@ Pillow
 pillow-heif
 google-cloud-storage
 google-cloud-vision
+sentence-transformers
+torch
+transformers

@@ -1,57 +1,31 @@
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+import requests
+import os
+import json
 
-LABELS = [
-    "romantic", "adventurous", "family-friendly", "spiritual", "sunset", "nature",
-    "photogenic", "historical", "cultural", "peaceful", "crowded", "quiet",
-    "trek", "local food", "viewpoint"
-]
+def extract_tags(description: str) -> list:
+    """
+    Calls the dedicated Cloud Function to extract tags.
+    This keeps the main Flask app lightweight.
+    """
+    # Get the URL of your deployed Cloud Function from an environment variable
+    function_url = os.environ.get('EXTRACT_TAGS_FUNCTION_URL')
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+    if not function_url:
+        print("ERROR: EXTRACT_TAGS_FUNCTION_URL environment variable not set.")
+        # Return a fallback or raise an error
+        return ["tagging_service_unavailable"]
 
-""" def extract_tags(description):
-    tags = []
-    desc = description.lower()
+    try:
+        headers = {"Content-Type": "application/json"}
+        payload = {"description": description}
 
-    rules = {
-        "romantic": ["romantic", "date", "couple"],
-        "adventurous": ["adventure", "thrill", "exciting"],
-        "family-friendly": ["family", "kids", "child", "safe"],
-        "spiritual": ["temple", "spiritual", "ashram", "divine"],
-        "sunset": ["sunset", "dusk"],
-        "nature": ["forest", "lake", "trees", "nature", "wild"],
-        "photogenic": ["photos", "instagram", "photogenic", "picturesque"],
-        "historical": ["fort", "ruins", "history", "heritage"],
-        "cultural": ["festival", "culture", "tradition"],
-        "peaceful": ["peaceful", "calm", "serene"],
-        "crowded": ["crowded", "busy", "rush"],
-        "quiet": ["quiet", "silent", "isolated"],
-        "trek": ["trek", "hike", "climb"],
-        "local food": ["food", "cuisine", "eat", "local dish"],
-        "viewpoint": ["viewpoint", "top", "hill", "scenic"]
-    }
+        response = requests.post(function_url, data=json.dumps(payload), headers=headers, timeout=10)
 
-    for label, keywords in rules.items():
-        if any(word in desc for word in keywords):
-            tags.append(label)
+        # Raise an exception if the call failed
+        response.raise_for_status() 
 
-    return tags """
+        return response.json()
 
-def extract_tags(description, threshold=0.4, top_n=3):
-    desc_embedding = model.encode([description])
-    label_embeddings = model.encode(LABELS)
-
-    similarities = cosine_similarity(desc_embedding, label_embeddings)[0]
-    
-    tag_scores = list(zip(LABELS, similarities))
-    tag_scores.sort(key=lambda x: x[1], reverse=True)
-
-    selected = [label for label, score in tag_scores if score >= threshold]
-    if len(selected) < top_n:
-        for label, _ in tag_scores:
-            if label not in selected:
-                selected.append(label)
-            if len(selected) == top_n:
-                break
-
-    return selected
+    except requests.exceptions.RequestException as e:
+        print(f"ERROR: Could not call the extract_tags Cloud Function: {e}")
+        return ["tagging_service_error"]

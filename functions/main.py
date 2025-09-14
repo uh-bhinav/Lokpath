@@ -8,11 +8,18 @@ from firebase_admin import initialize_app, storage, firestore, messaging
 from PIL import Image
 import pillow_heif
 from google.cloud import vision
+from firebase_functions import https_fn, options
+# from sentence_transformers import SentenceTransformer
+# from sklearn.metrics.pairwise import cosine_similarity
+import json
+# from transformers import pipeline
 
 # Initialize Firebase Admin SDK
 # This is done once when the function instance starts up.
 initialize_app()
 pillow_heif.register_heif_opener()
+
+options.set_global_options(region=options.SupportedRegion.ASIA_SOUTH1)
 
 # Define the thumbnail sizes you want to create
 THUMBNAIL_SIZES = {
@@ -221,7 +228,7 @@ def _update_firestore_with_moderation_status(original_path: str, status: str, re
 
 
 
-@firestore_fn.on_document_written("guides/{guideId}/reviews/{reviewId}")
+@firestore_fn.on_document_written(document="guides/{guideId}/reviews/{reviewId}")
 def update_guide_rating(event: firestore_fn.Event[firestore_fn.Change]) -> None:
     """
     Triggered when a new review is written for a guide. It recalculates the
@@ -269,7 +276,7 @@ def update_guide_rating(event: firestore_fn.Event[firestore_fn.Change]) -> None:
     print(f"Guide rating updated for {guide_id}. New Average: {new_average_rating}, Total Reviews: {num_reviews}")
 
 
-@firestore_fn.on_document_created("bookings/{bookingId}")
+@firestore_fn.on_document_created(document="bookings/{bookingId}")
 def assign_guide_to_booking(event: firestore_fn.Event[firestore_fn.Change]) -> None:
     booking_ref = event.reference
     booking_data = event.data.to_dict()
@@ -292,7 +299,7 @@ def assign_guide_to_booking(event: firestore_fn.Event[firestore_fn.Change]) -> N
     print(f"Assigned guide {assigned_guide_uid} to booking {booking_ref.id}.")
 
 
-@firestore_fn.on_document_updated("bookings/{bookingId}")
+@firestore_fn.on_document_updated(document="bookings/{bookingId}")
 def handle_booking_rejection(event: firestore_fn.Event[firestore_fn.Change]) -> None:
     # This function's code remains the same, but no longer needs to print notifications...
     before_data, after_data = event.data.before.to_dict(), event.data.after.to_dict()
@@ -385,7 +392,7 @@ def send_fcm_notification(user_id: str, title: str, body: str, data: dict = None
 
 
 # --- [NEW] Centralized Notification Handler Function ---
-@firestore_fn.on_document_updated("bookings/{bookingId}")
+@firestore_fn.on_document_updated(document="bookings/{bookingId}")
 def send_booking_notifications(event: firestore_fn.Event[firestore_fn.Change]) -> None:
     """
     Listens for booking status changes and sends relevant push notifications.
@@ -439,3 +446,138 @@ def send_booking_notifications(event: firestore_fn.Event[firestore_fn.Change]) -
             body=f"The booking {booking_id} was cancelled by the tourist.",
             data=data_payload
         )
+
+# --- START: Add the extracttags function ---
+
+# --- 1. Models are initialized to None to ensure fast deployment. ---
+model_extract_tags = None
+classifier_tag_reviews = None
+LABEL_EMBEDDINGS = None
+print("✅ Global scope loaded instantly.")
+
+LABELS = [
+    "romantic", "adventurous", "family-friendly", "spiritual", "sunset", "nature",
+    "photogenic", "historical", "cultural", "peaceful", "crowded", "quiet",
+    "trek", "local food", "viewpoint"
+]
+
+@https_fn.on_request(memory=options.MemoryOption.GB_2)
+def extracttags(req: https_fn.Request) -> https_fn.Response:
+    """HTTP Cloud Function to extract tags using sentence similarity."""
+    global model_extract_tags, LABEL_EMBEDDINGS
+
+    headers = {"Access-Control-Allow-Origin": "*"}
+    if req.method == "OPTIONS":
+        cors_headers = {"Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "3600"}
+        return https_fn.Response("", status=204, headers={**headers, **cors_headers})
+
+    try:
+        # --- 2. Inside the function, we check if the model is loaded. ---
+        if model_extract_tags is None:
+            print("Cold start: Loading SentenceTransformer model...")
+            # --- 3. If not, we load it once (the "cold start"). ---
+            from sentence_transformers import SentenceTransformer
+            from sklearn.metrics.pairwise import cosine_similarity
+            model_extract_tags = SentenceTransformer('all-MiniLM-L6-v2')
+            LABEL_EMBEDDINGS = model_extract_tags.encode(LABELS)
+            print("✅ SentenceTransformer model loaded successfully.")
+
+        if req.method != 'POST':
+            return https_fn.Response("Method not allowed.", status=405, headers=headers)
+
+        data = req.get_json()
+        description = data.get('description')
+        if not description:
+            return https_fn.Response("Missing 'description' in request body.", status=400, headers=headers)
+
+        desc_embedding = model_extract_tags.encode([description])
+        similarities = cosine_similarity(desc_embedding, LABEL_EMBEDDINGS)[0]
+        
+        tag_scores = sorted(list(zip(LABELS, similarities)), key=lambda x: x[1], reverse=True)
+        
+        # --- START: New and improved selection logic ---
+        threshold = 0.4
+        top_n = 3
+        
+        # 1. Select all tags that are above the confidence threshold
+        selected_tags = [label for label, score in tag_scores if score >= threshold]
+        
+        # 2. If we still don't have enough tags, fill with the next best ones
+        if len(selected_tags) < top_n:
+            # Get the remaining tags that weren't selected
+            remaining_tags = [label for label, score in tag_scores if label not in selected_tags]
+            # Add tags until we reach top_n
+            needed = top_n - len(selected_tags)
+            selected_tags.extend(remaining_tags[:needed])
+        # --- END: New logic ---
+
+        return https_fn.Response(json.dumps(selected_tags[:top_n]), status=200, headers=headers, content_type="application/json")
+
+
+    except Exception as e:
+        print(f"ERROR in extracttags: {e}")
+        return https_fn.Response("An error occurred.", status=500, headers=headers)
+
+@https_fn.on_request(memory=options.MemoryOption.GB_2)
+def tagplacewithreviews(req: https_fn.Request) -> https_fn.Response:
+    """HTTP Cloud Function to tag a place based on a list of reviews."""
+    global classifier_tag_reviews
+
+    headers = {"Access-Control-Allow-Origin": "*"}
+    if req.method == "OPTIONS":
+        cors_headers = {"Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Max-Age": "3600"}
+        return https_fn.Response("", status=204, headers={**headers, **cors_headers})
+
+    try:
+        # --- 2. We do the same "lazy load" for the second model. ---
+        if classifier_tag_reviews is None:
+            print("Cold start: Loading zero-shot classification model...")
+            from transformers import pipeline
+            classifier_tag_reviews = pipeline(
+                "zero-shot-classification",
+                model="facebook/bart-large-mnli",
+                device=-1
+            )
+            print("✅ Zero-shot classification model loaded successfully.")
+
+        if req.method != 'POST':
+            return https_fn.Response("Method not allowed.", status=405, headers=headers)
+            
+        data = req.get_json()
+        reviews = data.get('reviews')
+        if not isinstance(reviews, list):
+            return https_fn.Response("Missing 'reviews' list in request body.", status=400, headers=headers)
+
+        tag_count = {}
+        for review in reviews:
+            if not review: continue
+            result = classifier_tag_reviews(review, LABELS, multi_label=True)
+            for label, score in zip(result["labels"], result["scores"]):
+                if score >= 0.7:
+                    tag_count[label] = tag_count.get(label, 0) + 1
+        
+        final_tags = [tag for tag, count in tag_count.items() if count >= 1]
+        
+        response_data = {"tags": final_tags, "intensity": "medium"}
+        return https_fn.Response(json.dumps(response_data), status=200, headers=headers, content_type="application/json")
+
+    except Exception as e:
+        print(f"ERROR in tagplacewithreviews: {e}")
+        return https_fn.Response("An error occurred.", status=500, headers=headers)
+
+
+"""print("✅ Dummy main.py loaded instantly.")
+
+@https_fn.on_request(memory=options.MemoryOption.GB_2)
+def extracttags(req: https_fn.Request) -> https_fn.Response:
+    print("Executing dummy extracttags function.")
+    headers = {"Access-Control-Allow-Origin": "*"}
+    dummy_tags = ["test", "tag", "success"]
+    return https_fn.Response(json.dumps(dummy_tags), status=200, headers=headers, content_type="application/json")
+
+@https_fn.on_request(memory=options.MemoryOption.GB_2)
+def tagplacewithreviews(req: https_fn.Request) -> https_fn.Response:
+    print("Executing dummy tagplacewithreviews function.")
+    headers = {"Access-Control-Allow-Origin": "*"}
+    dummy_data = {"tags": ["test", "review", "success"], "intensity": "medium"}
+    return https_fn.Response(json.dumps(dummy_data), status=200, headers=headers, content_type="application/json")"""

@@ -1,27 +1,14 @@
 # In Dockerfile
+FROM python:3.10-slim
 
-# --- Stage 1: The Builder ---
-# This stage installs all dependencies
-FROM python:3.10-slim AS builder
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
 COPY requirements.txt .
 
-# Install dependencies into a temporary directory
-RUN pip install --no-cache-dir --target=/app/deps -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-
-# --- Stage 2: The Final Image ---
-# This is the lean, final image for production
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# Copy only the installed dependencies from the builder stage
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Copy your application code
 COPY . .
 
 EXPOSE 5000
