@@ -1,6 +1,6 @@
 # 🗺️ LokPath – AI Itinerary Builder (Backend Feature)
 
-## 📌 Overview
+##  Overview
 This module powers the **AI-based itinerary generation** for LokPath. It:
 - Fetches Places of Interest (POIs) dynamically using **Google Places API**.
 - Scrapes Google reviews and tags POIs using **BERT zero-shot classification**.
